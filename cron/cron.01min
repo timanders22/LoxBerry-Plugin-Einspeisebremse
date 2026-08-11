@@ -1,0 +1,11 @@
+#!/bin/bash
+#
+# Wachhund fuer den Regeldienst: laeuft er nicht, wird er gestartet.
+#
+# Das ist bei einer Einspeiseregelung kein Beiwerk. Steht der Dienst, wird
+# nichts mehr gestellt - die Anlage bleibt auf der zuletzt gestellten
+# Grenze stehen, und niemand merkt es, weil alles ruhig aussieht.
+
+SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+BASE=$(cd "$SELF/../.." && pwd)
+exec "$BASE/bin/plugins/einspeisebremse/dienst.sh" start >/dev/null 2>&1

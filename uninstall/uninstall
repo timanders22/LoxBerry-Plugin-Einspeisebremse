@@ -1,0 +1,43 @@
+#!/bin/bash
+# Einspeisebremse - Deinstallation
+#
+# WICHTIG: Zuerst die Anlage freigeben. Wer die Bremse entfernt, waehrend
+# die Wechselrichter auf einer gestellten Grenze stehen, laesst eine
+# gedrosselte Anlage zurueck, und niemand weiss mehr, warum.
+SELF=$(cd "$(dirname "$0")" && pwd)
+PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
+BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
+
+CF="$BASE/config/plugins/$PFOLDER/einspeisebremse.json"
+DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
+EBD="$BASE/bin/plugins/$PFOLDER/eb_dienst.php"
+
+if [ -f "$CF" ] && [ -f "$EBD" ] && command -v php >/dev/null 2>&1; then
+    # Regelung ausschalten und EINEN Durchlauf abwarten: der gibt die
+    # Anlage frei. Erst danach wird der Dienst beendet.
+    php -r '$f=$argv[1]; $d=json_decode(file_get_contents($f),true);
+            if(!is_array($d)){exit(1);} $d["ein"]=0;
+            file_put_contents($f, json_encode($d));' "$CF" 2>/dev/null
+    if php "$EBD" --einmal >/dev/null 2>&1; then
+        echo "<OK> Die Anlage wurde freigegeben."
+    else
+        echo "<INFO> Die Freigabe konnte nicht abgeschickt werden."
+        echo "<INFO> Bitte die Grenze am Wechselrichter selbst zuruecksetzen."
+    fi
+fi
+
+[ -x "$DIENST" ] && "$DIENST" stop >/dev/null 2>&1
+
+PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
+if [ -f "$PID" ]; then
+    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    rm -f "$PID"
+fi
+
+# Die Deinstallation von LoxBerry entfernt nur das VERZEICHNIS
+# config/plugins/<ordner>/. Eine Sicherungsdatei DANEBEN bliebe liegen.
+rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
+rm -rf "$BASE/data/plugins/$PFOLDER"
+
+echo "<OK> Einspeisebremse entfernt, Sicherungsdatei geloescht."
+exit 0

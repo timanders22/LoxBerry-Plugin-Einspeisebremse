@@ -1,0 +1,13 @@
+# Diese Pakete installiert LoxBerry mit "apt-get -y install" - und zwar als
+# root, waehrend der Plugin-Installation.
+#
+# WARUM DAS HIER STEHT UND NICHT IN postinstall.sh:
+# postinstall.sh laeuft als Benutzer loxberry. Ein "apt-get install" dort
+# scheitert mangels Rechten - immer, still, und mit einem Hinweistext, den
+# man leicht ueberliest. Diese Liste ist der vorgesehene Weg.
+#
+# mosquitto-clients bringt mosquitto_sub und mosquitto_pub. Ohne sie kann
+# die Bremse keinen MQTT-Zaehler lesen und nichts ueber MQTT stellen - und
+# das ist bei den meisten Anlagen der einzige Weg. Der Reiter Test sagt
+# ausdruecklich, ob beide Werkzeuge da sind.
+mosquitto-clients

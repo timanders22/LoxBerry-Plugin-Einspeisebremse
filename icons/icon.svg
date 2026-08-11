@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Main Center Icon: VERGRÖSSERTES Haus mit PV-Dach & internem Strom-Blitz (Skalierung 1.3x) -->
+    <g transform="translate(256, 195) scale(1.3)">
+      <!-- House Body -->
+      <path d="M -54 -10 L 0 -58 L 54 -10 L 54 62 L -54 62 Z" fill="#ffffff" />
+      
+      <!-- Roof PV Solar Panel Grid Cutout -->
+      <polygon points="-42,-14 0,-50 0,-14" fill="#6dac20" />
+      <polygon points="42,-14 0,-50 0,-14" fill="#6dac20" />
+      <!-- Grid lines on roof panel -->
+      <line x1="-21" y1="-32" x2="-21" y2="-14" stroke="#ffffff" stroke-width="2.5" />
+      <line x1="21" y1="-32" x2="21" y2="-14" stroke="#ffffff" stroke-width="2.5" />
+      <line x1="-32" y1="-23" x2="32" y2="-23" stroke="#ffffff" stroke-width="2.5" />
+
+      <!-- House Door Cutout -->
+      <rect x="-14" y="22" width="28" height="40" rx="3" fill="#6dac20" />
+      
+      <!-- Energy Lightning Cutout inside House (Eigenverbrauch) -->
+      <polygon points="-2,28 -8,41 -2,41 -5,54 5,39 0,39" fill="#ffffff" />
+      
+      <!-- Window Cutout Left & Right -->
+      <rect x="-42" y="10" width="20" height="20" rx="3" fill="#6dac20" />
+      <rect x="22" y="10" width="20" height="20" rx="3" fill="#6dac20" />
+    </g>
+
+    <!-- Flankierendes Symbol links: Sonne / PV-Erzeugung (Radius=28, X=100, Y=160) -->
+    <g transform="translate(100, 160)">
+      <circle cx="0" cy="0" r="28" fill="#ffffff" />
+      <circle cx="0" cy="0" r="13" fill="#6dac20" />
+      <line x1="0" y1="-21" x2="0" y2="-17" stroke="#6dac20" stroke-width="3.5" stroke-linecap="round" />
+      <line x1="0" y1="17" x2="0" y2="21" stroke="#6dac20" stroke-width="3.5" stroke-linecap="round" />
+      <line x1="-21" y1="0" x2="-17" y2="0" stroke="#6dac20" stroke-width="3.5" stroke-linecap="round" />
+      <line x1="17" y1="0" x2="21" y2="0" stroke="#6dac20" stroke-width="3.5" stroke-linecap="round" />
+      <line x1="-14" y1="-14" x2="-11" y2="-11" stroke="#6dac20" stroke-width="3.5" stroke-linecap="round" />
+      <line x1="11" y1="11" x2="14" y2="14" stroke="#6dac20" stroke-width="3.5" stroke-linecap="round" />
+      <line x1="11" y1="-11" x2="14" y2="-14" stroke="#6dac20" stroke-width="3.5" stroke-linecap="round" />
+      <line x1="-14" y1="14" x2="-11" y2="11" stroke="#6dac20" stroke-width="3.5" stroke-linecap="round" />
+    </g>
+
+    <!-- Flankierendes Symbol rechts: Stromnetz-Mast mit STOP-/Bremsschranke (Radius=28, X=412, Y=160) -->
+    <g transform="translate(412, 160)">
+      <circle cx="0" cy="0" r="28" fill="#ffffff" />
+      <path d="M 0 -15 L -11 14 L 11 14 Z" fill="none" stroke="#6dac20" stroke-width="3" />
+      <line x1="-14" y1="-5" x2="14" y2="-5" stroke="#6dac20" stroke-width="3" />
+      <line x1="-10" y1="3" x2="10" y2="3" stroke="#6dac20" stroke-width="3" />
+      <circle cx="0" cy="0" r="18" fill="none" stroke="#6dac20" stroke-width="4" />
+      <line x1="-11" y1="11" x2="11" y2="-11" stroke="#6dac20" stroke-width="4" stroke-linecap="round" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  </g>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Einspeisebremse</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
+</svg>
