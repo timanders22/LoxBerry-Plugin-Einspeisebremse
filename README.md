@@ -3,7 +3,7 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.1 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.8 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
 
@@ -84,8 +84,11 @@ abgeregelt.
 
 ## Prüfstand
 
-* `php bin/eb_dienst.php --selbsttest` — 62 Fälle des Regelkerns, ohne
+* `php bin/eb_dienst.php --selbsttest` — 91 Fälle des Regelkerns, ohne
   Anlage und ohne Netz.
+* Reiter *Test*, **Selbstprüfung** — eine stehende Liste, die ohne Loxone
+  beantwortet, ob die Einrichtung trägt. Je Zeile eine Frage mit Häkchen
+  oder Kreuz; die Zusammenfassung zählt die Kreuze, nicht die Häkchen.
 * `php bin/eb_dienst.php --probe` — die Messwerte einmal lesen und zeigen.
 * `php bin/eb_dienst.php --einmal` — ein Durchlauf im Vordergrund.
 * Reiter *Test*, **Trockenlauf** — was die Regelung jetzt täte, samt der

@@ -21,6 +21,7 @@ function eb_test_ausfuehren($welcher)
         case 'zeile':      return eb_test_zeile();
         case 'mqtt':       return eb_test_mqtt();
         case 'endpunkt':   return eb_test_endpunkt();
+        case 'wenn':       return eb_test_wenn();
     }
     return eb_t('TEST.M_UNBEKANNT');
 }
@@ -80,16 +81,27 @@ function eb_test_trocken()
     $o[] = sprintf('%-24s %d s', eb_klartext('TEST.T_ALTER'), eb_alter());
     $o[] = '';
 
+    /* GENAU dieselben Eingaben wie eb_durchlauf(). Ein Trockenlauf, der
+     * anders rechnet als der Betrieb, zeigt etwas, das nie passiert -
+     * und das waere schlimmer als kein Trockenlauf. */
     $mess = array(
         'netz'      => isset($stand['netz']) ? $stand['netz'] : null,
-        'erzeugung' => isset($stand['erzeugung']) ? $stand['erzeugung'] : 0,
+        // null heisst "nicht gemessen"; der Kern setzt dann die Grenze ein.
+        'erzeugung' => isset($stand['erzeugung']) ? $stand['erzeugung'] : null,
         'soc'       => isset($stand['soc']) && $stand['soc'] !== null ? $stand['soc'] : -1,
-        'lade_ist'  => isset($stand['lade_ist']) ? $stand['lade_ist'] : 0,
-        'alter_s'   => (isset($stand['netz']) && $stand['netz'] !== null) ? eb_alter() : -1,
+        'lade_ist'  => isset($stand['lade_ist']) && $stand['lade_ist'] !== null ? $stand['lade_ist'] : 0,
+        'alter_s'   => isset($stand['netz_alter']) && $stand['netz_alter'] !== null
+                       ? $stand['netz_alter'] : -1,
     );
-    $zust = array('drossel_w' => isset($stand['drossel_w']) ? $stand['drossel_w'] : 0,
-                  'lade_soll_w' => isset($stand['lade_soll_w']) ? $stand['lade_soll_w'] : 0);
-    $r = eb_regeln($mess, $cfg, $zust, time());
+    $cfg['anlage_max_w'] = eb_anlage_max();
+    $zust = array(
+        'drossel_w'     => isset($stand['drossel_w']) ? $stand['drossel_w'] : 0,
+        'lade_soll_w'   => isset($stand['lade_soll_w']) ? $stand['lade_soll_w'] : 0,
+        'sp_probe_seit' => isset($stand['sp_probe_seit']) ? $stand['sp_probe_seit'] : 0,
+        'sp_probe_lade' => isset($stand['sp_probe_lade']) ? $stand['sp_probe_lade'] : 0,
+        'sp_sperre_bis' => isset($stand['sp_sperre_bis']) ? $stand['sp_sperre_bis'] : 0,
+    );
+    $r = eb_regeln($mess, $cfg, $zust, microtime(true));
 
     $taten = array(EB_NICHTS => 'TAT.NICHTS', EB_SPEICHER => 'TAT.SPEICHER',
                    EB_DROSSEL => 'TAT.DROSSEL', EB_FREIGABE => 'TAT.FREIGABE');
@@ -100,6 +112,8 @@ function eb_test_trocken()
     $o[] = sprintf('%-24s %d W', eb_klartext('TEST.T_UEBER'), $r['ueberschuss_w']);
     $o[] = sprintf('%-24s %d W', eb_klartext('TEST.T_GRENZE'), $r['drossel_w']);
     $o[] = sprintf('%-24s %d W', eb_klartext('TEST.T_LADESOLL'), $r['lade_soll_w']);
+    if (!empty($r['erzeugung_ersatz'])) { $o[] = eb_klartext('TEST.T_ERSATZ'); }
+    if ((int) $r['speicher_folgt'] === 0) { $o[] = eb_klartext('TEST.T_SPEICHER_NEIN'); }
     if ($r['notfall']) { $o[] = ''; $o[] = eb_klartext('TEST.T_NOTFALL'); }
 
     $steller = eb_steller();
@@ -120,6 +134,16 @@ function eb_test_trocken()
     } else {
         $o[] = '';
         $o[] = eb_klartext('TEST.M_KEIN_STELLER');
+    }
+    /* Der Speicher bekommt seinen eigenen Befehl - auch der geht im Betrieb
+     * wirklich hinaus und gehoert deshalb hierher. */
+    $sp = eb_speicher_steller();
+    if ($sp) {
+        list($adr, $inh, $ers) = eb_befehl_bauen($sp, $r['lade_soll_w']);
+        $o[] = '';
+        $o[] = eb_klartext('TEST.T_SPEICHER');
+        $o[] = sprintf('  %-20s %7d W   %s', $sp['name'], $r['lade_soll_w'], $sp['art']);
+        $o[] = '      ' . $adr . ($inh !== '' ? '   ' . $inh : '');
     }
     $o[] = '';
     $o[] = eb_klartext('TEST.T_FUSS');
@@ -197,4 +221,401 @@ function eb_test_endpunkt()
         ? eb_klartext('TEST.EP_ABGEWIESEN')
         : sprintf(eb_klartext('TEST.EP_OFFEN'), substr((string) $falsch, 0, 200));
     return implode("\n", $o);
+}
+
+/* ==================================================================
+ * Die stehende Selbstpruefung
+ *
+ * Je Zeile eine Frage, die sich OHNE Loxone beantworten laesst. Drei
+ * Regeln aus REGELN_1, Abschnitt 12, gelten hier woertlich:
+ *
+ *   - Eine Pruefung, die einen leeren Befund erklaert, muss die Erklaerung
+ *     belegen koennen. "Ohne Speicher ist das normal" darf nur dastehen,
+ *     wenn geprueft ist, dass keiner da ist.
+ *   - Die Ursache gehoert VOR die Wirkung: "laeuft der Dienst" steht vor
+ *     "liegt ein Messwert vor", weil das eine das andere erklaert.
+ *   - Ein Hinweis ist fuer "geht mich nichts an" da, nicht fuer "ich weiss
+ *     es nicht". Unklarheit ist ein Kreuz.
+ * ================================================================== */
+
+/** Eine Zeile der Selbstpruefung. $ok: 1 Haekchen, 0 Kreuz, -1 Hinweis. */
+function eb_pruefzeile($frage, $ok, $bemerkung = '')
+{
+    return array('frage' => $frage, 'ok' => (int) $ok, 'bemerkung' => (string) $bemerkung);
+}
+
+/** Findet dienst.sh - im Archiv anders als installiert. */
+function eb_dienst_skript()
+{
+    $p = eb_paths();
+    foreach (array($p['bindir'] . '/dienst.sh',
+                   dirname(dirname(__DIR__)) . '/bin/dienst.sh') as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Ruft den eigenen Endpunkt mit ?selftest=1 auf. Rueckgabe: array(code, text). */
+function eb_endpunkt_selftest($token)
+{
+    $url = eb_endpunkt() . '?selftest=1&token=' . rawurlencode($token);
+    /* Drei Sekunden, nicht acht: diese Zeile steht in einer Seite, die bei
+     * jedem Aufruf des Reiters neu aufgebaut wird. Auf dem Geraet antwortet
+     * der eigene Webserver in Millisekunden; die Zeitueberschreitung greift
+     * nur, wenn etwas nicht stimmt - und dann soll man nicht minutenlang
+     * vor einer leeren Seite sitzen. */
+    $ctx = stream_context_create(array('http' => array('timeout' => 3, 'ignore_errors' => true)));
+    $t = @file_get_contents($url, false, $ctx);
+    $code = 0;
+    if (isset($http_response_header) && is_array($http_response_header)) {
+        foreach ($http_response_header as $z) {
+            if (preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) { $code = (int) $m[1]; }
+        }
+    }
+    return array($code, $t === false ? '' : trim((string) $t));
+}
+
+/**
+ * Zaehlt die drei Stellen der Reiterleiste gegeneinander.
+ *
+ * Die Leiste steht ausgeschrieben, damit hausstandard_pruefen.py sie
+ * ueberhaupt findet - eine erzeugte Leiste macht diese Pruefung blind, und
+ * genau das stand in REGELN_1 schon dreimal. Ausschreiben allein genuegt
+ * aber nicht: die Uebereinstimmung wird hier nachgemessen.
+ *
+ * Rueckgabe: array(zahl_leiste, zahl_bereiche, zahl_liste, gleich)
+ */
+function eb_reiter_zaehlen()
+{
+    $datei = __DIR__ . '/index.php';
+    $t = is_file($datei) ? (string) @file_get_contents($datei) : '';
+    if ($t === '') { return array(0, 0, 0, 0); }
+    $a = 'data-' . 'ziel="';
+    $leiste = array();
+    foreach (explode($a, $t) as $i => $stueck) {
+        if ($i === 0) { continue; }
+        $ende = strpos($stueck, '"');
+        if ($ende !== false) { $leiste[substr($stueck, 0, $ende)] = 1; }
+    }
+    $bereiche = array();
+    if (preg_match_all('#id="(tab-[a-z0-9]+)"#', $t, $m)) {
+        foreach ($m[1] as $id) { $bereiche[$id] = 1; }
+    }
+    /* Die Positivliste steht als ausgeschriebenes Feld in derselben Datei -
+     * dort sucht auch das Hauswerkzeug. Gelesen wird sie hier aus der Datei,
+     * damit es keine zweite Stelle gibt, die man mitpflegen muesste. */
+    $liste = array();
+    $anf = strpos($t, '$eb_reiter_liste');
+    if ($anf !== false) {
+        $stueck = substr($t, $anf, 400);
+        if (preg_match_all("#'(tab-[a-z0-9]+)'#", $stueck, $ml)) {
+            foreach ($ml[1] as $id) { $liste[$id] = 1; }
+        }
+    }
+    $gleich = (count($leiste) > 0
+               && array_keys($leiste) == array_keys($bereiche)
+               && count(array_diff(array_keys($leiste), array_keys($liste))) === 0) ? 1 : 0;
+    return array(count($leiste), count($bereiche), count($liste), $gleich);
+}
+
+/** Alle Zeilen der Selbstpruefung. */
+function eb_selbstpruefung()
+{
+    $cfg = eb_config();
+    $stand = eb_stand();
+    $z = array();
+    $ja = eb_klartext('ALLG.JA');
+    $nein = eb_klartext('ALLG.NEIN');
+
+    /* ---- Zuerst die Ursachen ---- */
+    $pid = eb_dienst_pid();
+    $z[] = eb_pruefzeile(eb_klartext('SP.DIENST'), $pid ? 1 : 0,
+        $pid ? sprintf(eb_klartext('SP.DIENST_PID'), $pid) : eb_klartext('SP.DIENST_STEHT'));
+
+    $alter = eb_alter();
+    $frisch = ($alter >= 0 && $alter <= (int) $cfg['notfall_s']);
+    $z[] = eb_pruefzeile(eb_klartext('SP.DURCHLAUF'), $frisch ? 1 : 0,
+        $alter < 0 ? eb_klartext('SP.NIE_GELAUFEN')
+                   : sprintf(eb_klartext('SP.SEKUNDEN_HER'), (int) $alter));
+
+    $mess_alter = isset($stand['netz_alter']) ? $stand['netz_alter'] : null;
+    $z[] = eb_pruefzeile(eb_klartext('SP.ZAEHLER'),
+        ($mess_alter !== null && $mess_alter <= (int) $cfg['notfall_s']) ? 1 : 0,
+        $mess_alter === null
+            ? sprintf(eb_klartext('SP.ZAEHLER_KEINER'),
+                      isset($stand['netz_anlass']) ? $stand['netz_anlass'] : '-')
+            : sprintf(eb_klartext('SP.SEKUNDEN_HER'), (int) round($mess_alter)));
+
+    /* ---- Dann die Einstellung ---- */
+    $m = eb_maengel($cfg);
+    $z[] = eb_pruefzeile(eb_klartext('SP.MAENGEL'), $m ? 0 : 1,
+        $m ? sprintf(eb_klartext('SP.MAENGEL_ZAHL'), count($m)) : eb_klartext('SP.MAENGEL_KEINE'));
+
+    $z[] = eb_pruefzeile(eb_klartext('SP.REGELUNG'), empty($cfg['ein']) ? -1 : 1,
+        empty($cfg['ein']) ? eb_klartext('SP.REGELUNG_AUS') : eb_klartext('SP.REGELUNG_EIN'));
+
+    $steller = eb_steller();
+    $z[] = eb_pruefzeile(eb_klartext('SP.STELLER'), $steller ? 1 : 0,
+        sprintf(eb_klartext('SP.STELLER_ZAHL'), count($steller)));
+
+    $anlage = eb_anlage_max($steller);
+    $z[] = eb_pruefzeile(eb_klartext('SP.ANLAGE_MAX'), $anlage > 0 ? 1 : 0,
+        $anlage > 0 ? sprintf(eb_klartext('SP.ANLAGE_MAX_W'), $anlage)
+                    : eb_klartext('SP.ANLAGE_MAX_FEHLT'));
+
+    /* Der Speicherzweig wird nur beurteilt, wenn er ueberhaupt gewaehlt ist -
+     * sonst waere die Zeile eine Beschwichtigung. */
+    if (!empty($cfg['speicher_zuerst'])) {
+        $gemessen = ($cfg['q_lade']['art'] !== 'aus');
+        $z[] = eb_pruefzeile(eb_klartext('SP.SPEICHER_MESSUNG'), $gemessen ? 1 : 0,
+            $gemessen ? $ja : eb_klartext('SP.SPEICHER_UNGEMESSEN'));
+        $folgt = isset($stand['speicher_folgt']) ? (int) $stand['speicher_folgt'] : -1;
+        $z[] = eb_pruefzeile(eb_klartext('SP.SPEICHER_FOLGT'),
+            $folgt === 0 ? 0 : ($folgt === 1 ? 1 : -1),
+            $folgt === 1 ? $ja : ($folgt === 0 ? $nein : eb_klartext('SP.NOCH_NICHT_GEPRUEFT')));
+        $sp = eb_speicher_steller();
+        $z[] = eb_pruefzeile(eb_klartext('SP.SPEICHER_WEG'), $sp ? 1 : -1,
+            $sp ? $sp['name'] : eb_klartext('SP.SPEICHER_WEG_FEHLT'));
+    }
+
+    /* Der Ersatzzaehler: ein Ersatzweg, den niemand sieht, wird
+     * unbemerkt zum Normalfall. */
+    $hat_ersatz = ($cfg['q_netz2']['art'] !== 'aus');
+    $laeuft_ersatz = !empty($stand['ersatz']);
+    $z[] = eb_pruefzeile(eb_klartext('SP.ERSATZ'), $laeuft_ersatz ? 0 : 1,
+        $laeuft_ersatz ? eb_klartext('SP.ERSATZ_NEIN')
+            : ($hat_ersatz ? eb_klartext('SP.ERSATZ_JA') : eb_klartext('SP.ERSATZ_KEINER')));
+
+    /* Taugt die Adresse, die in der Vorlage landet, fuer den Miniserver? */
+    $zweifel = eb_adresse_zweifelhaft();
+    $wo = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
+    $z[] = eb_pruefzeile(eb_klartext('SP.ADRESSE'), $zweifel ? 0 : 1,
+        sprintf(eb_klartext($zweifel ? 'SP.ADRESSE_ZWEIFELHAFT' : 'SP.ADRESSE_GUT'),
+                $wo !== '' ? $wo : '-'));
+
+    /* ---- Der Endpunkt, den der Miniserver aufruft ---- */
+    $token = eb_token();
+    list($code, $text) = eb_endpunkt_selftest($token);
+    $z[] = eb_pruefzeile(eb_klartext('SP.EP_ERREICHBAR'),
+        ($code === 200 && strpos($text, 'OK=1') !== false) ? 1 : 0,
+        $code ? sprintf(eb_klartext('SP.EP_ANTWORT'), $code, substr($text, 0, 40))
+              : eb_klartext('SP.EP_KEINE_ANTWORT'));
+    /* Die Gegenprobe nur, wenn ueberhaupt jemand geantwortet hat. Zweimal
+     * ins Leere zu laufen kostet nur Wartezeit und sagt nichts Neues. */
+    if ($code === 0) {
+        $z[] = eb_pruefzeile(eb_klartext('SP.EP_ABWEISUNG'), 0,
+                             eb_klartext('SP.EP_KEINE_ANTWORT'));
+    } else {
+        list($code2, $text2) = eb_endpunkt_selftest('falsch');
+        $z[] = eb_pruefzeile(eb_klartext('SP.EP_ABWEISUNG'),
+            ($code2 === 403 && strpos($text2, 'ERR=TOKEN') !== false) ? 1 : 0,
+            sprintf(eb_klartext('SP.EP_ANTWORT'), $code2, substr($text2, 0, 40)));
+    }
+
+    /* ---- Die Vorlage fuer Loxone ---- */
+    list($vname, $vxml) = eb_vorlage();
+    libxml_use_internal_errors(true);
+    $x = @simplexml_load_string($vxml);
+    $z[] = eb_pruefzeile(eb_klartext('SP.VORLAGE_XML'), $x === false ? 0 : 1,
+        $x === false ? eb_klartext('SP.VORLAGE_KAPUTT') : $vname);
+    if ($x !== false) {
+        $titel = array();
+        foreach ($x->VirtualInHttpCmd as $c) { $titel[] = (string) $c['Title']; }
+        $doppelt = array_filter(array_count_values($titel), function ($n) { return $n > 1; });
+        $z[] = eb_pruefzeile(eb_klartext('SP.VORLAGE_TITEL'), $doppelt ? 0 : 1,
+            $doppelt ? implode(', ', array_keys($doppelt))
+                     : sprintf(eb_klartext('SP.VORLAGE_ZAHL'), count($titel)));
+    }
+
+    /* ---- MQTT, aber nur wenn es gebraucht wird ---- */
+    $braucht_mqtt = !empty($cfg['mqtt_ein']);
+    foreach (array('q_netz', 'q_erzeugung', 'q_soc', 'q_lade') as $k) {
+        if ($cfg[$k]['art'] === 'mqtt') { $braucht_mqtt = true; }
+    }
+    foreach ($steller as $s) { if ($s['art'] === 'mqtt') { $braucht_mqtt = true; } }
+    if ($braucht_mqtt) {
+        @exec('command -v mosquitto_sub 2>/dev/null', $a1, $r1);
+        @exec('command -v mosquitto_pub 2>/dev/null', $a2, $r2);
+        $z[] = eb_pruefzeile(eb_klartext('SP.MQTT_WERKZEUGE'),
+            ($r1 === 0 && $r2 === 0) ? 1 : 0,
+            ($r1 === 0 && $r2 === 0) ? $ja : eb_klartext('SP.MQTT_WERKZEUGE_FEHLEN'));
+        $mz = eb_mqtt_zustand();
+        $z[] = eb_pruefzeile(eb_klartext('SP.MQTT_GATEWAY'),
+            ($mz['gefunden'] && $mz['autostart']) ? 1 : 0,
+            $mz['gefunden'] ? ($mz['autostart'] ? $ja : eb_klartext('SP.MQTT_KEIN_AUTOSTART'))
+                            : eb_klartext('SP.MQTT_NICHT_GEFUNDEN'));
+    }
+
+    /* ---- Die eigene Oberflaeche ---- */
+    list($nl, $nb, $nli, $gleich) = eb_reiter_zaehlen();
+    $z[] = eb_pruefzeile(eb_klartext('SP.REITER'), $gleich ? 1 : 0,
+        sprintf(eb_klartext('SP.REITER_ZAHL'), $nl, $nb, $nli));
+
+    $z[] = eb_pruefzeile(eb_klartext('SP.SPRACHE'), eb_sprache_fehlt() ? 0 : 1,
+        eb_sprache_fehlt() ? eb_klartext('SP.SPRACHE_FEHLT') : eb_sprache());
+
+    /* ---- Zuletzt der Rechenkern ---- */
+    list($n, $f) = eb_selbsttest(false);
+    $z[] = eb_pruefzeile(eb_klartext('SP.KERN'), $f === 0 ? 1 : 0,
+        sprintf(eb_klartext('SP.KERN_ZAHL'), EB_KERN, $n, $f));
+
+    return $z;
+}
+
+/** Die Selbstpruefung als Tabelle. */
+function eb_selbstpruefung_html()
+{
+    $z = eb_selbstpruefung();
+    $gruen = $rot = $hinweis = 0;
+    foreach ($z as $e) {
+        if ($e['ok'] === 1) { $gruen++; } elseif ($e['ok'] === 0) { $rot++; } else { $hinweis++; }
+    }
+    $o = '<table class="sm-tbl"><tr><th style="width:2em"></th><th>'
+       . eb_e(eb_klartext('SP.SP_FRAGE')) . '</th><th>'
+       . eb_e(eb_klartext('SP.SP_BEFUND')) . '</th></tr>';
+    foreach ($z as $e) {
+        $zeichen = $e['ok'] === 1 ? '&#10003;' : ($e['ok'] === 0 ? '&#10007;' : '&#8226;');
+        $farbe = $e['ok'] === 1 ? 'sm-an' : ($e['ok'] === 0 ? 'sm-aus' : '');
+        $o .= '<tr><td class="' . $farbe . '" style="text-align:center;font-weight:700">'
+            . $zeichen . '</td><td>' . eb_e($e['frage']) . '</td><td>'
+            . eb_e($e['bemerkung']) . '</td></tr>';
+    }
+    $o .= '</table>';
+    /* Die Zusammenfassung darf nicht besser aussehen als ihr schlechtester
+     * Punkt: gezaehlt werden die Kreuze, nicht die Haekchen. */
+    $o .= '<p class="sm-hilfe"><b>'
+        . eb_e(sprintf(eb_klartext($rot ? 'SP.SUMME_ROT' : 'SP.SUMME_GRUEN'),
+                       $rot, count($z), $hinweis))
+        . '</b></p>';
+    return $o;
+}
+
+/* ==================================================================
+ * Was waere, wenn?
+ *
+ * Der Trockenlauf rechnet mit den ZULETZT GEMESSENEN Werten. Nachts, bei
+ * Regen oder vor der ersten Messung sagt er deshalb wenig. Hier gibt der
+ * Mensch die Werte vor und sieht, was die Regelung damit taete - mit
+ * demselben Kern und denselben Befehlen wie im Betrieb.
+ *
+ * Es wird nichts gestellt und nichts gespeichert.
+ * ================================================================== */
+function eb_test_wenn()
+{
+    $cfg = eb_config();
+    $hol = function ($name, $vorgabe) {
+        $r = isset($_POST[$name]) ? str_replace(',', '.', trim((string) $_POST[$name])) : '';
+        if ($r === '') { return $vorgabe; }
+        // Abweisen statt zurechtbiegen - auch in einem Denkspiel.
+        return is_numeric($r) ? (float) $r : null;
+    };
+    $netz = $hol('w_netz', null);
+    $erz  = $hol('w_erz', null);
+    $soc  = $hol('w_soc', -1.0);
+    $lade = $hol('w_lade', 0.0);
+    if ($netz === null && (!isset($_POST['w_netz']) || trim((string) $_POST['w_netz']) !== '')) {
+        return eb_klartext('TEST.W_KEINE_ZAHL');
+    }
+    foreach (array('w_erz' => $erz, 'w_soc' => $soc, 'w_lade' => $lade) as $k => $v) {
+        if ($v === null && trim((string) (isset($_POST[$k]) ? $_POST[$k] : '')) !== '') {
+            return eb_klartext('TEST.W_KEINE_ZAHL');
+        }
+    }
+    if ($netz === null) { return eb_klartext('TEST.W_OHNE_NETZ'); }
+
+    $cfg['ziel_w'] = eb_ziel_w($cfg);
+    $cfg['anlage_max_w'] = eb_anlage_max();
+    $steller = eb_steller();
+    $mess = array('netz' => $netz, 'erzeugung' => $erz,
+                  'soc' => ($soc === null ? -1.0 : $soc),
+                  'lade_ist' => ($lade === null ? 0.0 : $lade), 'alter_s' => 1);
+    /* Als Ausgangslage die zuletzt gestellte Grenze, sonst die Anlagenspitze -
+     * genau wie der Dienst beim Einschalten. */
+    $stand = eb_stand();
+    $start = isset($stand['drossel_w']) ? (float) $stand['drossel_w']
+           : ($cfg['anlage_max_w'] > 0 ? (float) $cfg['anlage_max_w'] : 0.0);
+    $r = eb_regeln($mess, $cfg, array('drossel_w' => $start, 'lade_soll_w' => 0), microtime(true));
+
+    $taten = array(EB_NICHTS => 'TAT.NICHTS', EB_SPEICHER => 'TAT.SPEICHER',
+                   EB_DROSSEL => 'TAT.DROSSEL', EB_FREIGABE => 'TAT.FREIGABE');
+    $o = array(eb_klartext('TEST.W_KOPF'), '');
+    $o[] = sprintf('%-26s %d W', eb_klartext('TEST.W_NETZ'), (int) $netz);
+    $o[] = sprintf('%-26s %s', eb_klartext('TEST.W_ERZEUGUNG'),
+        $erz === null ? eb_klartext('TEST.W_UNGEMESSEN') : (int) $erz . ' W');
+    $o[] = sprintf('%-26s %s', eb_klartext('TEST.W_SOC'),
+        $soc < 0 ? eb_klartext('TEST.W_UNBEKANNT') : (int) $soc . ' %');
+    $o[] = sprintf('%-26s %d W', eb_klartext('TEST.W_LADE'), (int) $lade);
+    $o[] = sprintf('%-26s %d W', eb_klartext('TEST.W_START'), (int) $start);
+    $o[] = sprintf('%-26s %d W', eb_klartext('TEST.W_ZIEL'), (int) $cfg['ziel_w']);
+    $o[] = '';
+    $o[] = sprintf('%-26s %s', eb_klartext('TEST.T_TAT'),
+        eb_klartext(isset($taten[$r['tat']]) ? $taten[$r['tat']] : 'TAT.NICHTS'));
+    $o[] = sprintf('%-26s %s', eb_klartext('TEST.T_ANLASS'),
+        eb_klartext('ANLASS.' . strtoupper($r['anlass'])));
+    $o[] = sprintf('%-26s %s W', eb_klartext('TEST.T_UEBER'),
+        $r['ueberschuss_w'] === null ? '-' : (int) $r['ueberschuss_w']);
+    $o[] = sprintf('%-26s %d W', eb_klartext('TEST.T_GRENZE'), $r['drossel_w']);
+    $o[] = sprintf('%-26s %d W', eb_klartext('TEST.T_LADESOLL'), $r['lade_soll_w']);
+    if (!empty($r['erzeugung_ersatz'])) { $o[] = eb_klartext('TEST.T_ERSATZ'); }
+    if ($steller) {
+        $o[] = '';
+        $o[] = eb_klartext('TEST.T_VERTEILUNG');
+        foreach (eb_aufteilen($r['drossel_w'], $steller) as $nr => $w) {
+            list($adr, $inh, $ers) = eb_befehl_bauen($steller[$nr], $w);
+            $o[] = sprintf('  %d %-18s %7d W', $nr, $steller[$nr]['name'], $w);
+            $o[] = '      ' . $adr . ($inh !== '' ? '   ' . $inh : '');
+        }
+    }
+    $o[] = '';
+    $o[] = eb_klartext('TEST.W_FUSS');
+    return implode("\n", $o);
+}
+
+/* ==================================================================
+ * Bilanz
+ *
+ * Gezaehlt wird NUR, was gemessen ist. Eine Kilowattstundenzahl fuer den
+ * entgangenen Ertrag steht hier ausdruecklich NICHT: um sie zu bilden,
+ * muesste bekannt sein, was die Anlage ohne Grenze geliefert haette - und
+ * das weiss niemand, denn sie hat es nicht geliefert. Ausgewiesen wird
+ * stattdessen die DAUER der Abregelung. Eine Zahl, die niemand gemessen
+ * hat, darf nicht aussehen wie eine, die jemand gemessen hat.
+ * ================================================================== */
+function eb_bilanz_html()
+{
+    $bz = eb_bilanz();
+    if (!$bz || !isset($bz['heute'])) { return '<p class="sm-hilfe">'
+        . eb_e(eb_klartext('TEST.B_NOCH_NICHTS')) . '</p>'; }
+    $spalten = array(
+        'heute'       => sprintf(eb_klartext('TEST.B_HEUTE'), isset($bz['tag']) ? $bz['tag'] : '-'),
+        'gestern'     => sprintf(eb_klartext('TEST.B_GESTERN'), isset($bz['gestern_tag']) ? $bz['gestern_tag'] : '-'),
+        'monat_werte' => sprintf(eb_klartext('TEST.B_MONAT'), isset($bz['monat']) ? $bz['monat'] : '-'),
+    );
+    $zeilen = array(
+        'erzeugt_ws'     => array('TEST.B_ERZEUGT', 'kwh', 'erzeugt_gemessen'),
+        'eingespeist_ws' => array('TEST.B_EINGESPEIST', 'kwh', ''),
+        'bezogen_ws'     => array('TEST.B_BEZOGEN', 'kwh', ''),
+        'speicher_ws'    => array('TEST.B_SPEICHER', 'kwh', 'speicher_gemessen'),
+        'gedrosselt_s'   => array('TEST.B_GEDROSSELT', 'std', ''),
+    );
+    $o = '<table class="sm-tbl"><tr><th></th>';
+    foreach ($spalten as $ueber) { $o .= '<th>' . eb_e($ueber) . '</th>'; }
+    $o .= '</tr>';
+    foreach ($zeilen as $feld => $info) {
+        $o .= '<tr><td>' . eb_e(eb_klartext($info[0])) . '</td>';
+        foreach ($spalten as $k => $unbenutzt) {
+            $s = isset($bz[$k]) && is_array($bz[$k]) ? $bz[$k] : array();
+            $belegt = ($info[2] === '' || !empty($s[$info[2]]));
+            $w = isset($s[$feld]) ? eb_zahl($s[$feld], 0.0) : 0.0;
+            if (!$belegt) {
+                $o .= '<td>' . eb_e(eb_klartext('TEST.B_NICHT_GEMESSEN')) . '</td>';
+            } elseif ($info[1] === 'kwh') {
+                $o .= '<td>' . number_format(eb_kwh($w), 2, ',', '.') . ' kWh</td>';
+            } else {
+                $o .= '<td>' . number_format($w / 3600.0, 1, ',', '.') . ' h</td>';
+            }
+        }
+        $o .= '</tr>';
+    }
+    return $o . '</table>';
 }

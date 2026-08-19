@@ -23,6 +23,11 @@ laeuft() {
     [ -n "$PID" ] || return 1
     # Argumentweise pruefen, nicht mit grep ueber die ganze Befehlszeile:
     # ein grep auf "einspeisebremse" faende auch die eigene Suche.
+    # Erst nachsehen, ob es den Eintrag gibt. Die Eingabeumleitung wird VOR
+    # dem 2>/dev/null ausgewertet - fehlt /proc/<PID>, meldet die Shell das
+    # selbst, und beim Anhalten eines toten Dienstes stehen zwei
+    # Fehlerzeilen auf dem Bildschirm, die nichts bedeuten.
+    [ -r "/proc/$PID/cmdline" ] || return 1
     tr '\0' '\n' < "/proc/$PID/cmdline" 2>/dev/null | grep -q 'eb_dienst\.php$' && return 0
     return 1
 }

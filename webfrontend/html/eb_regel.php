@@ -17,7 +17,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('EB_KERN', '1.0.0');
+define('EB_KERN', '1.2.0');
 
 /* Was das Stellwerk in einem Durchlauf tun kann. */
 define('EB_NICHTS',   0);
@@ -104,6 +104,51 @@ function eb_speicher_luft($soc, $soc_max, $lade_ist_w, $lade_max_w)
 }
 
 /**
+ * Folgt der Speicher dem Ladesoll ueberhaupt?
+ *
+ * Ein Ladesoll ist eine BITTE. Ob der Speicher sie annimmt, sagt allein die
+ * gemessene Ladeleistung. Bis 0.9.4 hat der Kern den Ueberschuss dem
+ * Speicher gutgeschrieben und daraufhin NICHT abgeregelt - auch dann, wenn
+ * gar keine Ladeleistung gemessen wurde. Gemessen am 18.08.2026: bei
+ * eingeschaltetem Speicher-Vorrang und fehlender Ladeleistungs-Quelle
+ * speiste die Anlage dauerhaft weiter, waehrend der Anlass "der Ueberschuss
+ * geht in den Speicher" meldete und nirgends ein Fehler stand. Das ist
+ * dieselbe Klasse wie eine Quittung, die keine Wirkung ist.
+ *
+ * $zust traegt sp_probe_seit (wann zuletzt hingesehen wurde),
+ * sp_probe_lade (welche Ladeleistung damals anlag) und sp_sperre_bis.
+ *
+ * Rueckgabe: array(folgt, probe_seit, probe_lade, sperre_bis)
+ *   folgt = 1  der Speicherweg ist offen - er folgt, oder die Wartezeit laeuft
+ *   folgt = 0  gemessen: er folgt nicht, der Weg bleibt eine Weile gesperrt
+ */
+function eb_speicher_wirkt($lade_ist, $lade_soll, $zust, $jetzt, $wartezeit_s)
+{
+    $seit = eb_zahl(isset($zust['sp_probe_seit']) ? $zust['sp_probe_seit'] : 0, 0.0);
+    $basis = eb_zahl(isset($zust['sp_probe_lade']) ? $zust['sp_probe_lade'] : 0, 0.0);
+    $sperre = eb_zahl(isset($zust['sp_sperre_bis']) ? $zust['sp_sperre_bis'] : 0, 0.0);
+    $ist = max(0.0, eb_zahl($lade_ist, 0.0));
+    $soll = max(0.0, eb_zahl($lade_soll, 0.0));
+    $warte = max(1.0, eb_zahl($wartezeit_s, 20.0));
+    $jetzt = eb_zahl($jetzt, 0.0);
+
+    // Die Sperre laeuft noch: nicht in jeder Runde neu probieren.
+    if ($sperre > 0.0 && $jetzt < $sperre) { return array(0, 0.0, 0.0, $sperre); }
+    // Es wird gar nichts verlangt - dann gibt es auch nichts zu pruefen.
+    if ($soll <= 0.0) { return array(1, 0.0, 0.0, 0.0); }
+    // Erste Runde: Zeitpunkt und Ausgangsleistung merken.
+    if ($seit <= 0.0) { return array(1, $jetzt, $ist, 0.0); }
+    // Die Wartezeit laeuft noch - dem Speicher Zeit lassen.
+    if ($jetzt - $seit < $warte) { return array(1, $seit, $basis, 0.0); }
+    // Jetzt wird gemessen: ist die Ladeleistung wirklich gestiegen?
+    $verlangt = max(100.0, 0.3 * max(0.0, $soll - $basis));
+    if ($ist - $basis >= $verlangt) { return array(1, $jetzt, $ist, 0.0); }
+    // Er folgt nicht. Der Weg wird fuer zehn Wartezeiten gesperrt; solange
+    // wird abgeregelt, statt weiter auf einen Speicher zu hoffen.
+    return array(0, 0.0, 0.0, $jetzt + 10.0 * $warte);
+}
+
+/**
  * Eine Aenderung an der Leine fuehren.
  *
  * Abwaerts darf es schnell gehen - das ist die Richtung, die eine Auflage
@@ -123,31 +168,84 @@ function eb_rampe($alt_w, $wunsch_w, $rampe_ab_w, $rampe_auf_w)
 }
 
 /**
+ * Die harten Grenzen wahren - der einzige Ausgang von eb_regeln().
+ *
+ * Die Anlagenobergrenze ist die Summe der eingetragenen Spitzenleistungen.
+ * Ohne sie stand nach dem Ausschalten der Freigabewert (Vorgabe 100000) im
+ * Zustand, und beim Wiedereinschalten rampte die Regelung von dort herunter:
+ * gemessen am 18.08.2026 waren das 48 Takte, in denen die erste gestellte
+ * Grenze 98000 W betrug - also gar keine Grenze.
+ */
+function eb_grenzen_wahren($erg, $anlage_max_w, $lade_max_w)
+{
+    $anlage_max = max(0.0, eb_zahl($anlage_max_w, 0.0));
+    $lade_max = max(0.0, eb_zahl($lade_max_w, 0.0));
+    if ($anlage_max > 0.0) { $erg['drossel_w'] = min($erg['drossel_w'], $anlage_max); }
+    $erg['drossel_w'] = max(0.0, $erg['drossel_w']);
+    $erg['lade_soll_w'] = ($lade_max > 0.0)
+        ? max(0.0, min($lade_max, $erg['lade_soll_w']))
+        : 0.0;
+    return $erg;
+}
+
+/**
  * Der ganze Entschluss eines Durchlaufs.
  *
- * $mess:  netz, erzeugung, soc, lade_ist, alter_s (Alter des Netzmesswerts)
- * $cfg:   ziel_w, totband_w, rampe_ab_w, rampe_auf_w, soc_max,
- *         lade_max_w, drossel_min_w, notfall_s, notfall_w, speicher_zuerst
- * $zust:  drossel_w (zuletzt gestellte Erzeugungsgrenze), lade_soll_w
+ * $mess:  netz, erzeugung (null = nicht gemessen), soc, lade_ist, alter_s
+ * $cfg:   ziel_w, totband_w, rampe_ab_w, rampe_auf_w, soc_max, lade_max_w,
+ *         drossel_min_w, notfall_s, notfall_w, speicher_zuerst, wirkung_s,
+ *         anlage_max_w (0 = unbekannt)
+ * $zust:  drossel_w, lade_soll_w, sp_probe_seit, sp_probe_lade, sp_sperre_bis
  *
- * Rueckgabe: drossel_w, lade_soll_w, tat, anlass, ueberschuss_w, notfall
+ * Rueckgabe: drossel_w, lade_soll_w, tat, anlass, ueberschuss_w, notfall,
+ *            erzeugung_ersatz, speicher_folgt, sp_probe_seit, sp_probe_lade,
+ *            sp_sperre_bis
  */
 function eb_regeln($mess, $cfg, $zust, $jetzt)
 {
-    $erzeugung = max(0.0, eb_zahl(isset($mess['erzeugung']) ? $mess['erzeugung'] : 0, 0.0));
-    $drossel_alt = eb_zahl(isset($zust['drossel_w']) ? $zust['drossel_w'] : $erzeugung, $erzeugung);
-    $lade_alt = max(0.0, eb_zahl(isset($zust['lade_soll_w']) ? $zust['lade_soll_w'] : 0, 0.0));
     $alter = eb_zahl(isset($mess['alter_s']) ? $mess['alter_s'] : -1, -1.0);
     $notfall_s = max(5.0, eb_zahl(isset($cfg['notfall_s']) ? $cfg['notfall_s'] : 60, 60.0));
+    $lade_max = max(0.0, eb_zahl(isset($cfg['lade_max_w']) ? $cfg['lade_max_w'] : 0, 0.0));
+    $anlage_max = max(0.0, eb_zahl(isset($cfg['anlage_max_w']) ? $cfg['anlage_max_w'] : 0, 0.0));
+    $lade_alt = max(0.0, eb_zahl(isset($zust['lade_soll_w']) ? $zust['lade_soll_w'] : 0, 0.0));
+
+    /* Die Erzeugung zu messen ist FREIWILLIG. Fehlt sie, tritt die zuletzt
+     * gestellte Grenze an ihre Stelle - mehr als die kann die Anlage gerade
+     * nicht liefern. Bis 0.9.4 wurde stattdessen 0 angenommen; damit ergab
+     * "Erzeugung minus Ueberschuss" immer die Untergrenze, und die Regelung
+     * fuhr sich dauerhaft zu tief fest. Gemessen am 18.08.2026: 600 W statt
+     * moeglicher 1000 W, mit dem Anlass "es ist nichts mehr freizugeben"
+     * und ohne dass irgendwo ein Fehler stand. */
+    $erz_roh = isset($mess['erzeugung']) ? $mess['erzeugung'] : null;
+    $erz_gemessen = ($erz_roh !== null && $erz_roh !== '');
+    $erz_mess = $erz_gemessen ? max(0.0, eb_zahl($erz_roh, 0.0)) : 0.0;
+    $drossel_alt = isset($zust['drossel_w'])
+        ? eb_zahl($zust['drossel_w'], $erz_mess)
+        : ($erz_gemessen ? $erz_mess : $anlage_max);
+    $erzeugung = $erz_gemessen ? $erz_mess : max(0.0, $drossel_alt);
 
     $erg = array(
         'drossel_w' => $drossel_alt,
         'lade_soll_w' => $lade_alt,
         'tat' => EB_NICHTS,
         'anlass' => 'ruhe',
-        'ueberschuss_w' => 0.0,
+        'ueberschuss_w' => null,
         'notfall' => 0,
+        'erzeugung_ersatz' => $erz_gemessen ? 0 : 1,
+        'speicher_folgt' => -1,     // -1 = in diesem Durchlauf nicht geprueft
+        'sp_probe_seit' => 0.0,
+        'sp_probe_lade' => 0.0,
+        'sp_sperre_bis' => eb_zahl(isset($zust['sp_sperre_bis']) ? $zust['sp_sperre_bis'] : 0, 0.0),
     );
+
+    /* Der Ueberschuss wird ausgerechnet, sobald ein Zaehlerwert da ist -
+     * auch ein alter. Bleibt er unbekannt, steht dort NULL und nicht 0:
+     * eine 0 ist in einer Aufzeichnung nicht von "ausgeglichen" zu
+     * unterscheiden, und genau so sah der Notbetrieb bis 0.9.4 aus. */
+    if (isset($mess['netz']) && $mess['netz'] !== null && is_numeric($mess['netz'])) {
+        $erg['ueberschuss_w'] = eb_ueberschuss($mess['netz'],
+            isset($cfg['ziel_w']) ? $cfg['ziel_w'] : 0);
+    }
 
     /* ---- Totmannschaltung ----
      * Kein frischer Messwert heisst NICHT "alles in Ordnung". Wer bei
@@ -158,11 +256,17 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
     if ($alter < 0.0 || $alter > $notfall_s) {
         $notfall_w = max(0.0, eb_zahl(isset($cfg['notfall_w']) ? $cfg['notfall_w'] : 0, 0.0));
         $erg['drossel_w'] = min($drossel_alt, $notfall_w);
-        $erg['lade_soll_w'] = max(0.0, eb_zahl(isset($cfg['lade_max_w']) ? $cfg['lade_max_w'] : 0, 0.0));
+        /* Das Ladesoll wird NICHT angehoben. Bis 0.9.4 stand hier die volle
+         * Ladeleistung; bei der Rueckkehr nahm der Freigabezweig sie zuerst
+         * wieder zurueck und liess die Anlage sechs Takte lang auf dem
+         * Notwert stehen - mit der Begruendung "der Speicher laedt aus dem
+         * Netz", waehrend gar nichts lud. Ohne Zaehler weiss hier ohnehin
+         * niemand, ob Laden gerade richtig waere. Gemessen am 18.08.2026. */
+        $erg['lade_soll_w'] = $lade_alt;
         $erg['tat'] = EB_DROSSEL;
         $erg['anlass'] = ($alter < 0.0) ? 'kein_messwert' : 'messwert_alt';
         $erg['notfall'] = 1;
-        return $erg;
+        return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
     }
 
     $netz = eb_zahl(isset($mess['netz']) ? $mess['netz'] : 0, 0.0);
@@ -172,7 +276,7 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
 
     if (abs($ueber) <= $totband) {
         $erg['anlass'] = 'im_band';
-        return $erg;
+        return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
     }
 
     $rab = isset($cfg['rampe_ab_w']) ? $cfg['rampe_ab_w'] : 2000;
@@ -180,29 +284,56 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
 
     if ($ueber > 0.0) {
         /* Zu viel geht hinaus. Erst den Speicher fragen - der kostet keinen
-         * Ertrag. Abregeln ist immer der zweite Griff, nie der erste. */
+         * Ertrag. Abregeln ist immer der zweite Griff, nie der erste.
+         * Gefragt wird aber nur, solange der Speicher nachweislich folgt. */
         $luft = 0.0;
+        $folgt = 1;
         if (!empty($cfg['speicher_zuerst'])) {
-            $luft = eb_speicher_luft(
-                isset($mess['soc']) ? $mess['soc'] : -1,
-                isset($cfg['soc_max']) ? $cfg['soc_max'] : 95,
+            list($folgt, $ps, $pl, $sb) = eb_speicher_wirkt(
                 isset($mess['lade_ist']) ? $mess['lade_ist'] : 0,
-                isset($cfg['lade_max_w']) ? $cfg['lade_max_w'] : 0);
+                $lade_alt, $zust, $jetzt,
+                isset($cfg['wirkung_s']) ? $cfg['wirkung_s'] : 20);
+            $erg['speicher_folgt'] = $folgt;
+            $erg['sp_probe_seit'] = $ps;
+            $erg['sp_probe_lade'] = $pl;
+            $erg['sp_sperre_bis'] = $sb;
+            if ($folgt) {
+                $luft = eb_speicher_luft(
+                    isset($mess['soc']) ? $mess['soc'] : -1,
+                    isset($cfg['soc_max']) ? $cfg['soc_max'] : 95,
+                    isset($mess['lade_ist']) ? $mess['lade_ist'] : 0,
+                    $lade_max);
+            }
         }
         if ($luft > 0.0) {
-            $nimmt = min($luft, $ueber);
-            $erg['lade_soll_w'] = $lade_alt + $nimmt;
-            $erg['tat'] = EB_SPEICHER;
-            $erg['anlass'] = 'in_speicher';
-            $ueber -= $nimmt;
-            if ($ueber <= $totband) { return $erg; }
+            /* Gutgeschrieben wird nur, was nach dem Deckel wirklich mehr
+             * verlangt wird. Ohne den Deckel wuchs das Ladesoll je Takt
+             * weiter: gemessen 12000 W an einem 3-kW-Speicher nach zwoelf
+             * Durchlaeufen. */
+            $neu_soll = min($lade_max, $lade_alt + min($luft, $ueber));
+            $nimmt = max(0.0, $neu_soll - $lade_alt);
+            if ($nimmt > 0.0) {
+                $erg['lade_soll_w'] = $neu_soll;
+                $erg['tat'] = EB_SPEICHER;
+                $erg['anlass'] = 'in_speicher';
+                $ueber -= $nimmt;
+                if ($ueber <= $totband) {
+                    return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
+                }
+            }
         }
         $min = max(0.0, eb_zahl(isset($cfg['drossel_min_w']) ? $cfg['drossel_min_w'] : 0, 0.0));
         $wunsch = max($min, $erzeugung - $ueber);
         $erg['drossel_w'] = eb_rampe($drossel_alt, $wunsch, $rab, $rauf);
         $erg['tat'] = EB_DROSSEL;
-        $erg['anlass'] = ($erg['anlass'] === 'in_speicher') ? 'speicher_voll_drossel' : 'drosseln';
-        return $erg;
+        if ($erg['anlass'] === 'in_speicher') {
+            $erg['anlass'] = 'speicher_voll_drossel';
+        } elseif (!empty($cfg['speicher_zuerst']) && !$folgt) {
+            $erg['anlass'] = 'speicher_folgt_nicht';
+        } else {
+            $erg['anlass'] = 'drosseln';
+        }
+        return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
     }
 
     /* Luft nach oben. Die Reihenfolge ist hier NICHT dieselbe wie oben.
@@ -219,7 +350,9 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
         $erg['tat'] = EB_SPEICHER;
         $erg['anlass'] = 'weniger_laden';
         $frei -= $weniger;
-        if ($frei <= $totband) { return $erg; }
+        if ($frei <= $totband) {
+            return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
+        }
     }
     if ($drossel_alt < $erzeugung + $frei) {
         $wunsch = min($drossel_alt + $frei, $erzeugung + $frei);
@@ -228,11 +361,11 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
             $erg['tat'] = EB_FREIGABE;
             $erg['anlass'] = ($erg['anlass'] === 'weniger_laden')
                 ? 'weniger_laden_freigabe' : 'freigabe';
-            return $erg;
+            return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
         }
     }
     if ($erg['anlass'] === 'ruhe') { $erg['anlass'] = 'nichts_zu_holen'; }
-    return $erg;
+    return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
 }
 
 /**
@@ -249,7 +382,14 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
  * Fehler steht. (Gefunden am 11.08.2026: 5200 W Grenze, 60/40 auf zwei
  * Geraete, das erste bei 1600 W gedeckelt - verteilt wurden 3680 W.)
  *
- * $steller ist die Liste aus eb_steller(): Schluessel = Nummer, jeder
+ * ANTEIL 0 HEISST "NICHTS", sobald ein anderes Geraet einen Anteil traegt.
+ * Bis 0.9.4 fiel dem Geraet mit Anteil 0 der ganze Rest zu, sobald die
+ * uebrigen an ihrer Spitze standen - gemessen 3400 von 5000 W an ein Geraet,
+ * das ausdruecklich nichts bekommen sollte. Bleibt dadurch etwas liegen, ist
+ * das die sichere Richtung: die Auflage wird eingehalten, und der
+ * Trockenlauf weist die Abweichung aus.
+ *
+ * $steller ist die Liste aus eb_steller(): Schluessel = Platznummer, jeder
  * Eintrag mit 'anteil' und 'spitze_w'.
  */
 function eb_aufteilen($gesamt_w, $steller)
@@ -275,7 +415,11 @@ function eb_aufteilen($gesamt_w, $steller)
     }
 
     $rest = $gesamt;
-    $offen = array_keys($out);
+    // Wer 0 als Anteil traegt, waehrend andere einen haben, bekommt nichts.
+    $offen = array();
+    foreach ($out as $nr => $unbenutzt) {
+        if ($anteil[$nr] > 0.0) { $offen[] = $nr; }
+    }
     // Hoechstens so viele Runden, wie es Geraete gibt: in jeder Runde faellt
     // mindestens eines auf seinen Deckel, sonst ist der Rest verteilt.
     for ($runde = 0; $runde < count($steller) + 1 && $rest > 0.5 && $offen; $runde++) {
@@ -300,17 +444,26 @@ function eb_aufteilen($gesamt_w, $steller)
     }
 
     // Abrunden, damit keine krummen Watt hinausgehen - und der dabei
-    // anfallende Bruchteil geht an den Ersten, der noch Luft hat.
+    // anfallende Bruchteil geht an die Geraete mit Luft, in der Reihenfolge
+    // ihres Anteils. Geraete mit Anteil 0 bleiben aussen vor.
     $verteilt = 0.0;
     foreach ($out as $nr => $w) { $out[$nr] = floor($w); $verteilt += $out[$nr]; }
     $rest = $gesamt - $verteilt;
     if ($rest >= 1.0) {
-        foreach ($out as $nr => $w) {
+        $reihe = array();
+        foreach ($out as $nr => $unbenutzt) {
+            if ($anteil[$nr] > 0.0) { $reihe[] = $nr; }
+        }
+        usort($reihe, function ($a, $b) use ($anteil) {
+            if ($anteil[$a] === $anteil[$b]) { return ($a < $b) ? -1 : 1; }
+            return ($anteil[$a] > $anteil[$b]) ? -1 : 1;
+        });
+        foreach ($reihe as $nr) {
             if ($rest < 1.0) { break; }
-            $luft = $deckel[$nr] - $w;
+            $luft = $deckel[$nr] - $out[$nr];
             if ($luft <= 0) { continue; }
             $gib = floor(min($rest, $luft));
-            $out[$nr] = $w + $gib;
+            $out[$nr] = $out[$nr] + $gib;
             $rest -= $gib;
         }
     }
@@ -326,15 +479,125 @@ function eb_aufteilen($gesamt_w, $steller)
  * geprueft, sondern die Wirkung - naemlich ob die Einspeisung nach der
  * Wartezeit tatsaechlich gefallen ist.
  *
+ * ALLE DREI LEISTUNGSWERTE SIND EINSPEISUNGEN. $vorher_w und $nachher_w
+ * sind gemessene Einspeisungen (positiv = es fliesst hinaus), $ziel_w ist
+ * die erlaubte. Bis 0.9.4 stand an der dritten Stelle die
+ * ERZEUGUNGSGRENZE - zwei verschiedene Groessen. Bei Nulleinspeisung ist
+ * die Grenze fast immer groesser als die Einspeisung, der erwartete
+ * Rueckgang wurde negativ, und die Schwelle fiel auf die Untergrenze von
+ * 100 W: jeder Wolkenzug galt als "hat gewirkt". Gemessen am 18.08.2026.
+ *
  * Rueckgabe: 1 gewirkt, 0 noch offen, -1 keine Wirkung feststellbar.
  */
-function eb_wirkung($vorher_w, $nachher_w, $gestellt_w, $wartezeit_s, $vergangen_s, $mindest_w = 100.0)
+function eb_wirkung($vorher_w, $nachher_w, $ziel_w, $wartezeit_s, $vergangen_s, $mindest_w = 100.0)
 {
     if ($vergangen_s < max(1.0, eb_zahl($wartezeit_s, 15.0))) { return 0; }
+    $vorher = eb_zahl($vorher_w, 0.0);
     $soll_weniger = max(eb_zahl($mindest_w, 100.0),
-                        0.3 * max(0.0, eb_zahl($vorher_w, 0.0) - eb_zahl($gestellt_w, 0.0)));
-    $ist_weniger = eb_zahl($vorher_w, 0.0) - eb_zahl($nachher_w, 0.0);
+                        0.3 * max(0.0, $vorher - max(0.0, eb_zahl($ziel_w, 0.0))));
+    $ist_weniger = $vorher - eb_zahl($nachher_w, 0.0);
     return ($ist_weniger >= $soll_weniger) ? 1 : -1;
+}
+
+/* ==================================================================
+ * SunSpec - die Rechnung zum Modbus-Schreibweg
+ *
+ * Nur Rechnung. Das Abschreiten der Modellkette und das Schreiben selbst
+ * stehen in eb_dienst.php, weil sie ans Netz gehen.
+ * ================================================================== */
+
+/**
+ * Die Adresse eines SunSpec-Stellglieds zerlegen. Rueckgabe: array|null.
+ *
+ * Form:     IP[:Port]/Geraeteadresse[/Basis[/Rueckfall_s]]
+ * Beispiel: 192.168.178.31:502/1/40000/120
+ *
+ * BASIS ist das Register, in dem die Marke "SunS" steht - beim Fronius
+ * Datamanager 40000, am 19.08.2026 an einem Symo Hybrid gemessen. Sie
+ * steht trotzdem in der Adresse und nicht fest im Programm: ein anderer
+ * Hersteller legt sie anderswohin, und geraten wird hier nichts. Wer die
+ * Basis weglaesst, bekommt 40000; wer einen Rueckfall angeben will, muss
+ * die Basis mitschreiben, sonst wandert seine Zahl in das falsche Feld.
+ *
+ * RUECKFALL_S ist der Zeitablauf, den der WECHSELRICHTER selbst fuehrt
+ * (WMaxLimPct_RvrtTms). Nach seinem Ablauf beendet das Geraet die
+ * Drosselung von allein. 0 heisst: kein Rueckfall - die Drosselung bleibt
+ * dann stehen, bis jemand sie zuruecknimmt, auch wenn der LoxBerry stirbt.
+ * Das ist eine Entscheidung und keine Kleinigkeit, deshalb steht sie
+ * sichtbar in der Adresse statt versteckt in einer Vorgabe.
+ */
+function eb_sunspec_zerlegen($adresse)
+{
+    $muster = '#^([0-9A-Za-z\.\-]+)(?::([0-9]{1,5}))?/([0-9]{1,3})'
+            . '(?:/([0-9]{1,5}))?(?:/([0-9]{1,5}))?$#';
+    if (!preg_match($muster, trim((string) $adresse), $t)) { return null; }
+    $port = (!isset($t[2]) || $t[2] === '') ? 502 : (int) $t[2];
+    if ($port < 1 || $port > 65535) { return null; }
+    $id = (int) $t[3];
+    if ($id < 0 || $id > 247) { return null; }
+    $basis = (!isset($t[4]) || $t[4] === '') ? 40000 : (int) $t[4];
+    if ($basis < 0 || $basis > 65533) { return null; }
+    $rueck = (!isset($t[5]) || $t[5] === '') ? 0 : (int) $t[5];
+    /* 28800 s ist die Obergrenze des Herstellers. Wer mehr eintraegt,
+     * bekommt keinen stillen Deckel, sondern eine abgewiesene Adresse. */
+    if ($rueck < 0 || $rueck > 28800) { return null; }
+    return array('host' => $t[1], 'port' => $port, 'id' => $id,
+                 'basis' => $basis, 'rueckfall_s' => $rueck);
+}
+
+/**
+ * Aus einer Wattgrenze den Rohwert fuer WMaxLimPct machen.
+ *
+ * Rueckgabe: array(rohwert|null, anlass).
+ *
+ * DER SKALIERUNGSFAKTOR WIRD NICHT ANGENOMMEN. Er wird am Geraet gelesen
+ * und hier hereingereicht. Am 19.08.2026 lieferte ein Symo Hybrid -2,
+ * also Prozent mal hundert: 100 % sind der Rohwert 10000. Das Beispiel im
+ * Fronius-Handbuch ("z. B. 30 fuer 30 %") widerspricht der Tabelle
+ * daneben und ist falsch. Wer ihm glaubt, drosselt auf 0,30 Prozent und
+ * schaltet die Anlage praktisch ab. Genau darum steht hier kein fester
+ * Faktor, sondern einer, der vom Wechselrichter kommt.
+ *
+ * SPITZE_W ist die Nennleistung des Wechselrichters. WMaxLimPct begrenzt
+ * die AUSGANGSLEISTUNG in Prozent davon - nicht die Einspeisung. Bei
+ * Eigenverbrauch und Speicher ist das nicht dasselbe; ob die Drosselung
+ * am Zaehler ankommt, entscheidet weiterhin eb_wirkung().
+ */
+function eb_sunspec_roh($watt, $spitze_w, $sf)
+{
+    $spitze = eb_zahl($spitze_w, 0.0);
+    if ($spitze <= 0.0) { return array(null, 'ohne_spitzenleistung'); }
+    $sf = (int) $sf;
+    /* Ein Faktor ausserhalb dieses Bereichs ist kein Faktor, sondern ein
+     * falsch gelesenes Register - etwa weil die Kette um eines verrutscht
+     * ist. Dann wird nicht gestellt. Ein Versatz ist bei diesem Geraet die
+     * teuerste Fehlerklasse ueberhaupt. */
+    if ($sf < -4 || $sf > 0) { return array(null, 'faktor_unglaubhaft'); }
+    $prozent = max(0.0, min(100.0, eb_zahl($watt, 0.0) / $spitze * 100.0));
+    $roh = (int) round($prozent * pow(10, -$sf));
+    if ($roh < 0 || $roh > 65535) { return array(null, 'rohwert_ausserhalb'); }
+    return array($roh, 'gut');
+}
+
+/**
+ * Wie oft ein SunSpec-Stellglied aufgefrischt werden muss (Sekunden).
+ *
+ * Der uebrige Stellweg spricht nur bei AENDERUNG. Ein Wechselrichter mit
+ * Zeitablauf faellt aber von allein zurueck, wenn nichts mehr kommt -
+ * genau das ist gewollt, wenn die Bremse stirbt, und genau deshalb muss
+ * sie, solange sie lebt, VOR Ablauf erneut sprechen. Ohne dieses
+ * Auffrischen loeste sich jede laenger stehende Drosselung still auf.
+ *
+ * Die Haelfte des Zeitablaufs laesst einen ausgefallenen Durchlauf zu,
+ * ohne dass die Drosselung springt. Oefter als im Takt laeuft nichts,
+ * also ist der Takt die Untergrenze. Rueckfall 0 heisst kein Zeitablauf,
+ * also auch nichts aufzufrischen.
+ */
+function eb_sunspec_auffrischen_s($rueckfall_s, $takt_s)
+{
+    $r = max(0, (int) $rueckfall_s);
+    if ($r === 0) { return 0; }
+    return max(max(1, (int) $takt_s), (int) floor($r / 2));
 }
 
 /* ==================================================================
@@ -383,14 +646,30 @@ function eb_selbsttest($ausgabe = true)
     // Unbekannter Ladestand: nicht raten, aber auch nicht blockieren.
     $pruef('Ladestand unbekannt: halbe Leistung', eb_speicher_luft(-1, 95, 0, 3000), 1500);
 
-    // ---- Rampe ----
-    $pruef('abwaerts darf weit springen', eb_rampe(6000, 1000, 2000, 300), 4000);
-    $pruef('aufwaerts nur in kleinen Schritten', eb_rampe(1000, 6000, 2000, 300), 1300);
-    $pruef('Ziel innerhalb der Rampe wird erreicht', eb_rampe(1000, 1200, 2000, 300), 1200);
+    // ---- Folgt der Speicher? ----
+    list($fo, $ps, $pl, $sb) = eb_speicher_wirkt(0, 0, array(), 1000, 20);
+    $pruef('ohne Ladesoll gibt es nichts zu pruefen', $fo, 1);
+    list($fo, $ps, $pl, $sb) = eb_speicher_wirkt(0, 2000, array(), 1000, 20);
+    $pruef('erste Runde: Weg offen, Probe laeuft an', $fo, 1);
+    $pruef('erste Runde: Zeitpunkt gemerkt', $ps, 1000);
+    list($fo, $ps, $pl, $sb) = eb_speicher_wirkt(0, 2000,
+        array('sp_probe_seit' => 1000, 'sp_probe_lade' => 0), 1010, 20);
+    $pruef('Wartezeit laeuft noch: Weg bleibt offen', $fo, 1);
+    list($fo, $ps, $pl, $sb) = eb_speicher_wirkt(1800, 2000,
+        array('sp_probe_seit' => 1000, 'sp_probe_lade' => 0), 1030, 20);
+    $pruef('Speicher folgt: Weg bleibt offen', $fo, 1);
+    list($fo, $ps, $pl, $sb) = eb_speicher_wirkt(0, 2000,
+        array('sp_probe_seit' => 1000, 'sp_probe_lade' => 0), 1030, 20);
+    $pruef('Speicher folgt nicht: Weg gesperrt', $fo, 0);
+    $pruef('und zwar bis zehn Wartezeiten spaeter', $sb, 1230);
+    list($fo, $ps, $pl, $sb) = eb_speicher_wirkt(0, 2000,
+        array('sp_sperre_bis' => 1230), 1100, 20);
+    $pruef('waehrend der Sperre bleibt er gesperrt', $fo, 0);
 
     $cfg = array('ziel_w' => 0, 'totband_w' => 50, 'rampe_ab_w' => 2000, 'rampe_auf_w' => 300,
                  'soc_max' => 95, 'lade_max_w' => 3000, 'drossel_min_w' => 0,
-                 'notfall_s' => 60, 'notfall_w' => 0, 'speicher_zuerst' => 1);
+                 'notfall_s' => 60, 'notfall_w' => 0, 'speicher_zuerst' => 1,
+                 'wirkung_s' => 20, 'anlage_max_w' => 0);
 
     // ---- Totmannschaltung ----
     $r = eb_regeln(array('netz' => -5000, 'erzeugung' => 6000, 'alter_s' => 120),
@@ -398,9 +677,18 @@ function eb_selbsttest($ausgabe = true)
     $pruef('alter Messwert: Notfall', $r['notfall'], 1);
     $pruef('alter Messwert: Grenze auf Notwert', $r['drossel_w'], 0);
     $pruef('alter Messwert: Anlass', $r['anlass'], 'messwert_alt');
-    $r = eb_regeln(array('netz' => -5000, 'erzeugung' => 6000, 'alter_s' => -1),
+    // Der Ueberschuss wird auch im Notbetrieb ausgewiesen, wenn ein Wert da ist.
+    $pruef('Notbetrieb weist den Ueberschuss aus', $r['ueberschuss_w'], 5000);
+    // Das Ladesoll wird im Notfall NICHT angehoben (blockierte die Rueckkehr).
+    $r2 = eb_regeln(array('netz' => -5000, 'erzeugung' => 6000, 'alter_s' => 120),
+                    $cfg, array('drossel_w' => 6000, 'lade_soll_w' => 0), 1000);
+    $pruef('Notfall hebt das Ladesoll nicht an', $r2['lade_soll_w'], 0);
+    $r = eb_regeln(array('netz' => null, 'erzeugung' => 6000, 'alter_s' => -1),
                    $cfg, array('drossel_w' => 6000), 1000);
     $pruef('nie ein Messwert: Notfall', $r['anlass'], 'kein_messwert');
+    // Ohne Zaehlerwert ist der Ueberschuss UNBEKANNT, nicht null.
+    $pruef('ohne Zaehlerwert bleibt der Ueberschuss unbekannt',
+           $r['ueberschuss_w'] === null ? 'null' : 'zahl', 'null');
     // Der Notfall darf die Grenze nur SENKEN, nie anheben.
     $r = eb_regeln(array('netz' => -5000, 'erzeugung' => 6000, 'alter_s' => 120),
                    array_merge($cfg, array('notfall_w' => 9999)),
@@ -425,6 +713,48 @@ function eb_selbsttest($ausgabe = true)
     $pruef('Speicher voll ausgereizt: Ladesoll', $r['lade_soll_w'], 3000);
     $pruef('Rest wird gedrosselt', $r['drossel_w'], 5000);
     $pruef('Anlass nennt beides', $r['anlass'], 'speicher_voll_drossel');
+
+    /* Der Deckel: das Ladesoll darf die eingetragene Hoechstleistung nicht
+     * ueberschreiten, auch nicht ueber viele Durchlaeufe. Bis 0.9.4 wuchs es
+     * je Takt weiter - gemessen 12000 W an einem 3-kW-Speicher. */
+    $zust = array('drossel_w' => 9000, 'lade_soll_w' => 0);
+    for ($i = 0; $i < 12; $i++) {
+        $r = eb_regeln(array('netz' => -9000, 'erzeugung' => 9000, 'soc' => 40,
+                             'lade_ist' => 0, 'alter_s' => 3), $cfg, $zust, 1000);
+        $zust['lade_soll_w'] = $r['lade_soll_w'];
+        $zust['sp_probe_seit'] = $r['sp_probe_seit'];
+        $zust['sp_probe_lade'] = $r['sp_probe_lade'];
+    }
+    $pruef('Ladesoll laeuft nicht davon', $zust['lade_soll_w'], 3000);
+
+    /* Und der Grund, warum der Deckel INNEN sitzt und nicht nur am Ausgang:
+     * gutgeschrieben werden darf nur, was der Speicher wirklich mehr nimmt.
+     * Ohne den inneren Deckel gilt der ganze Ueberschuss als untergebracht,
+     * und die uebrigen 1500 W gehen weiter ins Netz - waehrend die Anzeige
+     * ein sauber gedeckeltes Ladesoll zeigt. */
+    $r = eb_regeln(array('netz' => -2000, 'erzeugung' => 5000, 'soc' => 40,
+                         'lade_ist' => 0, 'alter_s' => 3),
+                   $cfg, array('drossel_w' => 5000, 'lade_soll_w' => 2500), 1000);
+    $pruef('am Deckel wird der Rest abgeregelt', $r['tat'], EB_DROSSEL);
+    $pruef('am Deckel bleibt das Ladesoll stehen', $r['lade_soll_w'], 3000);
+
+    /* Der Speicher folgt nicht: nach der Wartezeit wird abgeregelt, statt
+     * weiter auf ihn zu hoffen. Das ist der Fall, in dem die Anlage bis
+     * 0.9.4 dauerhaft weiterspeiste. */
+    /* Der Fall ist so gewaehlt, dass ein FOLGSAMER Speicher den ganzen
+     * Ueberschuss aufnaehme. Nur dann sagt die Pruefzeile etwas ueber die
+     * Probe aus; sonst waere ohnehin abgeregelt worden. */
+    $sp_zust = array('drossel_w' => 5000, 'lade_soll_w' => 1000,
+                     'sp_probe_seit' => 1000, 'sp_probe_lade' => 0);
+    $sp_mess = array('netz' => -1500, 'erzeugung' => 5000, 'soc' => 40,
+                     'lade_ist' => 0, 'alter_s' => 3);
+    $r = eb_regeln($sp_mess, $cfg, $sp_zust, 1030);   // Wartezeit abgelaufen
+    $pruef('Speicher folgt nicht: es wird gedrosselt', $r['tat'], EB_DROSSEL);
+    $pruef('Speicher folgt nicht: Anlass', $r['anlass'], 'speicher_folgt_nicht');
+    $pruef('Speicher folgt nicht: Grenze faellt', $r['drossel_w'], 3500);
+    $r = eb_regeln($sp_mess, $cfg, $sp_zust, 1010);   // Wartezeit laeuft noch
+    $pruef('Wartezeit laeuft: der Speicher bekommt den Ueberschuss', $r['tat'], EB_SPEICHER);
+    $pruef('Wartezeit laeuft: nicht gedrosselt', $r['drossel_w'], 5000);
 
     // Speicher voll: sofort abregeln, ohne Umweg.
     $r = eb_regeln(array('netz' => -1500, 'erzeugung' => 4000, 'soc' => 100, 'lade_ist' => 0, 'alter_s' => 3),
@@ -477,6 +807,33 @@ function eb_selbsttest($ausgabe = true)
                    array('drossel_w' => 6000), 1000);
     $pruef('70-Prozent: 5000 W hinaus sind zu viel', $r['drossel_w'], 5200);
 
+    // ---- Ohne Erzeugungsmessung ----
+    /* Fehlt die Erzeugungsquelle, tritt die zuletzt gestellte Grenze an ihre
+     * Stelle. Bis 0.9.4 wurde 0 angenommen; die Regelung fuhr sich dann bei
+     * einem Wert weit unter dem Moeglichen fest. Haus zieht 400 W mehr, als
+     * die Anlage bei ihrer Grenze von 600 W liefert -> es MUSS freigegeben
+     * werden. */
+    $ohne = array_merge($cfg, array('speicher_zuerst' => 0));
+    $r = eb_regeln(array('netz' => 400, 'erzeugung' => null, 'soc' => 100, 'alter_s' => 3),
+                   $ohne, array('drossel_w' => 600, 'lade_soll_w' => 0), 1000);
+    $pruef('ohne Erzeugungsmessung: als Ersatz gekennzeichnet', $r['erzeugung_ersatz'], 1);
+    $pruef('ohne Erzeugungsmessung: es wird freigegeben', $r['tat'], EB_FREIGABE);
+    $pruef('ohne Erzeugungsmessung: Grenze steigt', $r['drossel_w'], 900);
+    $r = eb_regeln(array('netz' => 400, 'erzeugung' => 4000, 'soc' => 100, 'alter_s' => 3),
+                   $ohne, array('drossel_w' => 600, 'lade_soll_w' => 0), 1000);
+    $pruef('mit Erzeugungsmessung: nicht als Ersatz gekennzeichnet', $r['erzeugung_ersatz'], 0);
+
+    // ---- Anlagenobergrenze ----
+    /* Nach dem Ausschalten steht der Freigabewert im Zustand. Ohne Deckel
+     * rampte die Regelung von 100000 W herunter und stellte dabei 98000 W. */
+    $r = eb_regeln(array('netz' => -500, 'erzeugung' => 4000, 'soc' => 100, 'alter_s' => 3),
+                   array_merge($ohne, array('anlage_max_w' => 8000)),
+                   array('drossel_w' => 100000, 'lade_soll_w' => 0), 1000);
+    $pruef('Anlagenobergrenze deckelt die Grenze', $r['drossel_w'], 8000);
+    $r = eb_regeln(array('netz' => -500, 'erzeugung' => 4000, 'soc' => 100, 'alter_s' => 3),
+                   $ohne, array('drossel_w' => 100000, 'lade_soll_w' => 0), 1000);
+    $pruef('ohne eingetragene Spitzen kein Deckel', $r['drossel_w'], 98000);
+
     // ---- Aufteilen ----
     $st = function ($anteil, $spitze) { return array('anteil' => $anteil, 'spitze_w' => $spitze); };
     $summe = function ($a) { return array_sum($a); };
@@ -503,6 +860,14 @@ function eb_selbsttest($ausgabe = true)
     $pruef('beide am Anschlag (2)', $a[2], 2000);
     $pruef('mehr als die Anlage kann bleibt liegen', $summe($a), 3600);
 
+    /* Anteil 0 heisst nichts, sobald ein anderes Geraet einen Anteil hat -
+     * auch dann, wenn dieses an seiner Spitze steht. Bis 0.9.4 fielen dem
+     * Geraet mit Anteil 0 hier 3400 W zu. */
+    $a = eb_aufteilen(5000, array(1 => $st(100, 1600), 2 => $st(0, 0)));
+    $pruef('Anteil 0 bekommt nichts', $a[2], 0);
+    $pruef('das andere bleibt auf seiner Spitze', $a[1], 1600);
+    $pruef('der Rest bleibt liegen statt falsch zu landen', $summe($a), 1600);
+
     // Drei Geraete, krumme Zahl: es darf kein Watt verschwinden.
     $a = eb_aufteilen(1000, array(1 => $st(1, 0), 2 => $st(1, 0), 3 => $st(1, 0)));
     $pruef('krumme Teilung verliert nichts', $summe($a), 1000);
@@ -510,11 +875,74 @@ function eb_selbsttest($ausgabe = true)
     $pruef('Grenze 0 verteilt 0', $summe(eb_aufteilen(0, array(1 => $st(50, 0), 2 => $st(50, 0)))), 0);
     $pruef('ohne Stellglieder leere Liste', count(eb_aufteilen(5000, array())), 0);
 
+    // Luecken in den Platznummern sind erlaubt und aendern nichts.
+    $a = eb_aufteilen(5000, array(2 => $st(60, 0), 4 => $st(40, 0)));
+    $pruef('Luecke in den Platznummern: Platz 2', $a[2], 3000);
+    $pruef('Luecke in den Platznummern: Platz 4', $a[4], 2000);
+
     // ---- Wirkung ----
-    $pruef('Wartezeit laeuft noch', eb_wirkung(6000, 6000, 3000, 15, 5), 0);
-    $pruef('Wirkung eingetreten', eb_wirkung(6000, 3100, 3000, 15, 20), 1);
-    $pruef('keine Wirkung trotz Quittung', eb_wirkung(6000, 5950, 3000, 15, 20), -1);
-    $pruef('kleine Aenderung, kleine Wirkung genuegt', eb_wirkung(1000, 880, 900, 15, 20), 1);
+    /* Alle drei Werte sind Einspeisungen. 6000 W hinaus bei 0 erlaubt heisst:
+     * es muessen mindestens 1800 W verschwinden. */
+    $pruef('Wartezeit laeuft noch', eb_wirkung(6000, 6000, 0, 15, 5), 0);
+    $pruef('Wirkung eingetreten', eb_wirkung(6000, 100, 0, 15, 20), 1);
+    $pruef('keine Wirkung trotz Quittung', eb_wirkung(6000, 5950, 0, 15, 20), -1);
+    $pruef('kleine Einspeisung, kleine Wirkung genuegt', eb_wirkung(300, 150, 0, 15, 20), 1);
+    /* Der Fall, an dem die alte Fassung scheiterte: dort stand an dritter
+     * Stelle die Erzeugungsgrenze. 3000 W hinaus gegen 4000 W Grenze ergaben
+     * eine Schwelle von 100 W, und ein Rueckgang um 120 W galt als Erfolg.
+     * Gegen die erlaubte Einspeisung sind 900 W noetig. */
+    $pruef('Schwelle haengt an der erlaubten Einspeisung', eb_wirkung(3000, 2880, 0, 15, 20), -1);
+    // Bei einer 70-Prozent-Regelung ist das Ziel nicht null.
+    $pruef('70-Prozent: Rueckgang auf das Erlaubte genuegt', eb_wirkung(6000, 4200, 4200, 15, 20), 1);
+
+    // ---- SunSpec: Adresse zerlegen ----
+    $a = eb_sunspec_zerlegen('192.168.178.31:502/1/40000/120');
+    $pruef('SunSpec Adresse vollstaendig: Host', $a['host'], '192.168.178.31');
+    $pruef('SunSpec Adresse vollstaendig: Port', $a['port'], 502);
+    $pruef('SunSpec Adresse vollstaendig: Basis', $a['basis'], 40000);
+    $pruef('SunSpec Adresse vollstaendig: Rueckfall', $a['rueckfall_s'], 120);
+    $a = eb_sunspec_zerlegen('192.168.178.31/1');
+    $pruef('SunSpec ohne Port: 502', $a['port'], 502);
+    $pruef('SunSpec ohne Basis: 40000', $a['basis'], 40000);
+    $pruef('SunSpec ohne Rueckfall: 0', $a['rueckfall_s'], 0);
+    $pruef('SunSpec Rueckfall ueber 28800 abgewiesen',
+           eb_sunspec_zerlegen('192.0.2.1/1/40000/28801'), null);
+    $pruef('SunSpec Geraeteadresse ueber 247 abgewiesen',
+           eb_sunspec_zerlegen('192.0.2.1/248'), null);
+    $pruef('SunSpec Leerstring abgewiesen', eb_sunspec_zerlegen(''), null);
+    $pruef('SunSpec: das Lesemuster ist KEINE Stelladresse',
+           eb_sunspec_zerlegen('192.0.2.1:502/1/52/float32/4'), null);
+
+    // ---- SunSpec: Wattgrenze in den Rohwert ----
+    /* Der am 19.08.2026 gemessene Faktor ist -2, also Prozent mal hundert. */
+    list($roh, $anl) = eb_sunspec_roh(5000, 10000, -2);
+    $pruef('50 Prozent bei Faktor -2 sind 5000', $roh, 5000);
+    list($roh, $anl) = eb_sunspec_roh(10000, 10000, -2);
+    $pruef('volle Leistung ist 10000', $roh, 10000);
+    list($roh, $anl) = eb_sunspec_roh(0, 10000, -2);
+    $pruef('null Watt sind null', $roh, 0);
+    /* Der Fall, der die Anlage abschalten wuerde, wenn man dem Beispiel im
+     * Handbuch glaubte: 30 Prozent sind 3000, nicht 30. */
+    list($roh, $anl) = eb_sunspec_roh(3000, 10000, -2);
+    $pruef('30 Prozent sind 3000 und nicht 30', $roh, 3000);
+    list($roh, $anl) = eb_sunspec_roh(3000, 10000, 0);
+    $pruef('bei Faktor 0 waeren 30 Prozent die 30', $roh, 30);
+    list($roh, $anl) = eb_sunspec_roh(20000, 10000, -2);
+    $pruef('mehr als die Nennleistung wird auf 100 Prozent gedeckelt', $roh, 10000);
+    list($roh, $anl) = eb_sunspec_roh(-500, 10000, -2);
+    $pruef('negative Grenze wird auf null gedeckelt', $roh, 0);
+    list($roh, $anl) = eb_sunspec_roh(5000, 0, -2);
+    $pruef('ohne Spitzenleistung wird nicht gestellt', $anl, 'ohne_spitzenleistung');
+    list($roh, $anl) = eb_sunspec_roh(5000, 10000, -9);
+    $pruef('unglaubhafter Faktor wird nicht gestellt', $anl, 'faktor_unglaubhaft');
+    list($roh, $anl) = eb_sunspec_roh(5000, 10000, -4);
+    $pruef('Faktor -4 ergaebe 500000 und wird abgewiesen', $anl, 'rohwert_ausserhalb');
+
+    // ---- SunSpec: wie oft aufgefrischt wird ----
+    $pruef('Rueckfall 120 bei Takt 5: alle 60 s', eb_sunspec_auffrischen_s(120, 5), 60);
+    $pruef('kein Rueckfall: nichts aufzufrischen', eb_sunspec_auffrischen_s(0, 5), 0);
+    $pruef('Rueckfall kuerzer als der Takt: hoechstens im Takt',
+           eb_sunspec_auffrischen_s(4, 5), 5);
 
     if ($ausgabe) {
         echo sprintf("\nEinspeisebremse-Kern %s: %d Faelle geprueft, %d Fehlschlaege.\n",

@@ -78,7 +78,18 @@ if [ -f "$PBIN/eb_dienst.php" ]; then
     fi
 fi
 
-chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+# KEIN chown: dieses Skript laeuft als Benutzer loxberry (siehe Kopf), ein
+# "chown -R loxberry:loxberry ... 2>/dev/null" scheiterte dort still und sah
+# nur nach Absicherung aus. Ein Befehl, der genau dann nichts tut, wenn man
+# ihn braeuchte, ist schlimmer als keiner. Stattdessen wird nachgesehen und
+# gesagt, falls etwas dem falschen Benutzer gehoert.
+WER=$(id -un)
+FREMD=$(find "$PDATA" "$PLOG" "$PCONFIG" ! -user "$WER" 2>/dev/null | head -3)
+if [ -n "$FREMD" ]; then
+    echo "<INFO> Diese Dateien gehoeren nicht $WER:"
+    echo "$FREMD" | sed 's/^/<INFO>   /'
+    echo "<INFO> Der Dienst laeuft als $WER und koennte sie nicht schreiben."
+fi
 
 # ---------- Dienst starten ----------
 # Der Dienst misst und zeigt an. GESTELLT wird erst, wenn der Mensch die

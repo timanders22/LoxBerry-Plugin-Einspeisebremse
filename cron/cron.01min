@@ -1,11 +1,38 @@
-#!/bin/bash
+#!/bin/sh
 #
-# Wachhund fuer den Regeldienst: laeuft er nicht, wird er gestartet.
+# Einspeisebremse - Waechter, minuetlich.
 #
-# Das ist bei einer Einspeiseregelung kein Beiwerk. Steht der Dienst, wird
-# nichts mehr gestellt - die Anlage bleibt auf der zuletzt gestellten
-# Grenze stehen, und niemand merkt es, weil alles ruhig aussieht.
+# Steht der Dienst, wird nichts mehr gestellt: die Anlage bleibt auf der
+# zuletzt gestellten Grenze stehen, und niemand merkt es, weil alles ruhig
+# aussieht. Deshalb wird hier jede Minute nachgesehen.
+#
+# Der Platzhalter in der Zeile DIENST= wird bei der Installation durch den
+# bin-Ordner des Plugins ersetzt. Er steht deshalb NUR dort und nicht hier
+# im Kommentar: der Installer ersetzt ihn ueberall, und danach stuende in
+# dieser Datei ein fest verdrahteter Systempfad - genau danach sucht der
+# Pluginpruefer, ohne den Zusammenhang zu lesen. Am 18.08.2026 an der
+# installierten 0.9.5 gesehen.
+# NICHT vom eigenen Ablageort eine feste Zahl Ebenen aufwaerts rechnen:
+# LoxBerry legt diese Datei tiefer ab, als die Rechnung annahm, und der
+# Waechter hat deshalb bis 0.9.3 nie gelaufen. Am 18.08.2026 auf dem
+# Geraet gemessen; 31 von 33 Linien des Bestands benutzen den Platzhalter.
+DIENST="REPLACELBPBINDIR/dienst.sh"
 
-SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-BASE=$(cd "$SELF/../.." && pwd)
-exec "$BASE/bin/plugins/einspeisebremse/dienst.sh" start >/dev/null 2>&1
+# Fail loud statt still. Ein Waechter, der schweigend nichts tut, ist
+# schlimmer als keiner - genau daran ist die alte Fassung gescheitert.
+if [ ! -x "$DIENST" ]; then
+    MELDUNG="Einspeisebremse: der Waechter findet dienst.sh nicht - es wird nicht nachgestartet."
+    command -v logger >/dev/null 2>&1 && logger -t einspeisebremse "$MELDUNG"
+    echo "$MELDUNG" >&2
+    exit 1
+fi
+
+# Die Wirkung melden, nicht den Aufruf: laeuft der Dienst schon, endet
+# dienst.sh mit 0 und sagt nichts.
+if ! "$DIENST" start >/dev/null 2>&1; then
+    MELDUNG="Einspeisebremse: der Dienst liess sich nicht starten - siehe dienst.out im Protokollordner."
+    command -v logger >/dev/null 2>&1 && logger -t einspeisebremse "$MELDUNG"
+    echo "$MELDUNG" >&2
+    exit 1
+fi
+exit 0
