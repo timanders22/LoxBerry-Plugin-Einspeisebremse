@@ -231,9 +231,8 @@ if ($eb_post && isset($_POST['speichern'])) {
     if ($eb_formular === 'einstellungen') {
         /* ---- Messquellen ---- */
         $eb_qarten = eb_quellarten();
-        foreach (array('q_netz' => 'QUELLE.NETZ', 'q_netz2' => 'QUELLE.NETZ2',
-                       'q_erzeugung' => 'QUELLE.ERZEUGUNG',
-                       'q_soc' => 'QUELLE.SOC', 'q_lade' => 'QUELLE.LADE') as $eb_k => $eb_bez) {
+        foreach (eb_quellenfelder() as $eb_k => $eb_f) {
+            $eb_bez = $eb_f['bez'];
             $q = eb_quelle_vorgabe();
             $q['art'] = $eb_wert($eb_k . '_art', 'aus');
             $q['adresse'] = $eb_wert($eb_k . '_adresse');
@@ -653,9 +652,8 @@ if ($eb_rahmen) {
 <tr><th><?= eb_e(eb_t('QUELLE.SP_GROESSE')) ?></th><th><?= eb_e(eb_t('QUELLE.L_ART')) ?></th>
     <th><?= eb_e(eb_t('QUELLE.L_ADRESSE')) ?></th><th><?= eb_e(eb_t('QUELLE.L_PFAD')) ?></th>
     <th><?= eb_e(eb_t('QUELLE.L_FAKTOR')) ?></th><th><?= eb_e(eb_t('QUELLE.L_INV')) ?></th></tr>
-<?php foreach (array('q_netz' => 'QUELLE.NETZ', 'q_netz2' => 'QUELLE.NETZ2',
-                     'q_erzeugung' => 'QUELLE.ERZEUGUNG',
-                     'q_soc' => 'QUELLE.SOC', 'q_lade' => 'QUELLE.LADE') as $eb_k => $eb_bez) {
+<?php foreach (eb_quellenfelder() as $eb_k => $eb_f) {
+    $eb_bez = $eb_f['bez'];
     $q = $eb_cfg[$eb_k]; ?>
 <tr>
   <td><b><?= eb_e(eb_t($eb_bez)) ?></b></td>

@@ -63,6 +63,45 @@ function eb_paths()
  * Konfiguration
  * ================================================================== */
 
+/**
+ * Die Messquellen - EINMAL, in Anzeigereihenfolge.
+ *
+ * Diese Liste stand bis 0.9.8 an SECHS Stellen im Programm: beim
+ * MQTT-Abo, beim Einlesen der Konfiguration, in der Maengelpruefung,
+ * im Prueflauf --probe und zweimal in der Oberflaeche. Eine davon war
+ * bereits auseinandergelaufen - das MQTT-Abo kannte den Ersatzzaehler
+ * nicht, weshalb ein Ersatzzaehler ueber MQTT nie einen Wert lieferte.
+ *
+ * Seither stehen sie hier, und die sechs Stellen leiten daraus ab. Eine
+ * weitere Quelle ist damit eine Zeile und keine Suche.
+ *
+ *   bez    Schluessel der Beschriftung in den Sprachdateien
+ *   kurz   Klartext fuer den Dienst, der keine Uebersetzung laedt
+ *   summe  gesetzt bei den Quellen, die zur ERZEUGUNG addiert werden
+ */
+function eb_quellenfelder()
+{
+    return array(
+        'q_netz'       => array('bez' => 'QUELLE.NETZ',       'kurz' => 'Netz'),
+        'q_netz2'      => array('bez' => 'QUELLE.NETZ2',      'kurz' => 'Netz (Ersatz)'),
+        'q_erzeugung'  => array('bez' => 'QUELLE.ERZEUGUNG',  'kurz' => 'Erzeugung',   'summe' => 1),
+        'q_erzeugung2' => array('bez' => 'QUELLE.ERZEUGUNG2', 'kurz' => 'Erzeugung 2', 'summe' => 1),
+        'q_erzeugung3' => array('bez' => 'QUELLE.ERZEUGUNG3', 'kurz' => 'Erzeugung 3', 'summe' => 1),
+        'q_soc'        => array('bez' => 'QUELLE.SOC',        'kurz' => 'Ladestand'),
+        'q_lade'       => array('bez' => 'QUELLE.LADE',       'kurz' => 'Ladeleistung'),
+    );
+}
+
+/** Die Quellen, die zur Erzeugung addiert werden - in ihrer Reihenfolge. */
+function eb_erzeugungsfelder()
+{
+    $r = array();
+    foreach (eb_quellenfelder() as $k => $f) {
+        if (!empty($f['summe'])) { $r[] = $k; }
+    }
+    return $r;
+}
+
 /** Woher ein einzelner Messwert kommt. */
 function eb_quelle_vorgabe()
 {
@@ -112,7 +151,7 @@ function eb_einheiten()
 
 function eb_vorgaben()
 {
-    return array(
+    $v = array(
         'ein'             => 0,      // die Regelung selbst - aus bis der Mensch ja sagt
         'ziel_w'          => 0,
         /* Zwei weitere Zielwerte und die gewaehlte Stufe. Loxone waehlt
@@ -155,9 +194,10 @@ function eb_vorgaben()
          * Notbetrieb greift, und er wird angezeigt: sonst wird aus dem
          * Ersatz unbemerkt der Normalfall. */
         'q_netz2'         => null,
-        'q_erzeugung'     => null,
-        'q_soc'           => null,
-        'q_lade'          => null,
+        /* Die uebrigen Quellen kommen aus eb_quellenfelder() - siehe dort,
+         * warum diese Liste nur noch an einer Stelle steht. q_netz und
+         * q_netz2 bleiben hier stehen, weil ihre Kommentare hierher
+         * gehoeren; doppelt gesetzt schadet nichts. */
         'steller'         => array(),
         /* Der Weg zum Speicher. Ohne ihn ist das Ladesoll nur eine Zahl
          * auf dem Bildschirm: der Kern rechnet mit einem Freiheitsgrad,
@@ -167,6 +207,13 @@ function eb_vorgaben()
         'mqtt_topic'      => 'einspeisebremse',
         'aktionstoken'    => '',
     );
+    /* Jede Messquelle bekommt ihren Platz - aus der EINEN Liste. Was oben
+     * schon steht, bleibt dort (mitsamt seinem Kommentar); alles Weitere
+     * kommt von hier. So kann keine Quelle mehr vergessen werden. */
+    foreach (array_keys(eb_quellenfelder()) as $k) {
+        if (!array_key_exists($k, $v)) { $v[$k] = null; }
+    }
+    return $v;
 }
 
 function eb_json_lesen($pfad)
@@ -254,7 +301,7 @@ function eb_config()
     }
     $cfg = array_merge(eb_vorgaben(), eb_json_lesen($p['config']));
 
-    foreach (array('q_netz', 'q_netz2', 'q_erzeugung', 'q_soc', 'q_lade') as $k) {
+    foreach (array_keys(eb_quellenfelder()) as $k) {
         $cfg[$k] = eb_quelle_richten($cfg[$k]);
     }
 
@@ -436,6 +483,35 @@ function eb_quellvorlagen()
                 'q_lade' => array('art' => 'http',
                     'adresse' => 'http://%s/solar_api/v1/GetPowerFlowRealtimeData.fcgi',
                     'pfad' => 'Body.Data.Site.P_Akku', 'faktor' => 1.0, 'invertieren' => 1),
+            ),
+        ),
+        /* Der ZWEITE Wechselrichter - eine eigene Vorlage, kein zweites
+         * Feld in der ersten.
+         *
+         * Der Grund steht in der Mechanik des Vorlagenwerks: es setzt EINE
+         * Angabe des Anwenders in alle Adressen ein. Beim zweiten Geraet
+         * unterscheiden sich aber ZWEI Dinge - die Adresse des
+         * Datamanagers UND die Geraeteadresse dahinter. Am 19.08.2026
+         * gemessen: der Hybrid liegt auf 192.168.178.31 unter 1, der Symo
+         * 8.2 auf 192.168.178.30 unter 2.
+         *
+         * Deshalb fragt diese Vorlage nicht nach der IP, sondern nach
+         * "Host:Port/Geraeteadresse" - genau dem Stueck, das sich
+         * unterscheidet. Das ist eine Handvoll Zeichen mehr zu tippen und
+         * dafuer nichts geraten. Wer nur eine IP eintraegt, bekommt eine
+         * Adresse, die nicht auf das Muster passt, und der Reiter Test
+         * sagt es - statt still das falsche Geraet zu lesen.
+         *
+         * Register 40091 ist dasselbe wie beim ersten Geraet: die
+         * Ausgangsleistung aus Inverter Model 113. Sie wird zur ersten
+         * Erzeugung ADDIERT. */
+        'fronius_modbus_zweiter' => array(
+            'bez' => 'VORLAGE.FRONIUS_MODBUS_ZWEITER',
+            'hinweis' => 'VORLAGE.FRONIUS_MODBUS_ZWEITER_HINWEIS',
+            'feld' => 'VORLAGE.F_GERAET', 'vorgabe' => '192.168.178.30:502/2',
+            'quellen' => array(
+                'q_erzeugung2' => array('art' => 'modbus', 'adresse' => '%s/40091/float32/3',
+                                        'pfad' => '', 'faktor' => 1.0, 'invertieren' => 0),
             ),
         ),
     );
@@ -686,9 +762,7 @@ function eb_maengel($cfg)
     /* Eine Modbus-Adresse, die nicht auf das Muster passt, wird hier
      * beanstandet - nicht erst im Betrieb, wo sie nur eine leere Messung
      * ergaebe. */
-    foreach (array('q_netz' => 'QUELLE.NETZ', 'q_netz2' => 'QUELLE.NETZ2',
-                   'q_erzeugung' => 'QUELLE.ERZEUGUNG', 'q_soc' => 'QUELLE.SOC',
-                   'q_lade' => 'QUELLE.LADE') as $mk => $mb) {
+    foreach (array_keys(eb_quellenfelder()) as $mk) {
         if ($cfg[$mk]['art'] === 'modbus' && $cfg[$mk]['adresse'] !== ''
             && eb_modbus_zerlegen($cfg[$mk]['adresse']) === null) {
             $m[] = 'MANGEL.MODBUS_FORM';
@@ -696,6 +770,31 @@ function eb_maengel($cfg)
     }
     if ($cfg['q_netz2']['art'] !== 'aus' && $cfg['q_netz2']['adresse'] === '') {
         $m[] = 'MANGEL.ERSATZ_OHNE_ADRESSE';
+    }
+    /* Die weiteren Erzeugungsquellen werden ADDIERT, nicht ersetzt. Steht
+     * eine auf einer Art ohne Adresse, liefert sie nichts - und weil eine
+     * Summe alles oder nichts ist, faellt damit die GANZE
+     * Erzeugungsmessung aus. Das ist schlimmer als gar keine weitere
+     * Quelle und wird deshalb ausdruecklich beanstandet. */
+    $eb_ef = eb_erzeugungsfelder();
+    $eb_erste = array_shift($eb_ef);
+    foreach ($eb_ef as $k) {
+        if ($cfg[$k]['art'] === 'aus') { continue; }
+        if ($cfg[$k]['adresse'] === '') { $m[] = 'MANGEL.ERZEUGUNG_WEITERE_OHNE_ADRESSE'; }
+        if ($cfg[$eb_erste]['art'] === 'aus') { $m[] = 'MANGEL.ERZEUGUNG_WEITERE_OHNE_ERSTE'; }
+    }
+    /* Zweimal dasselbe Geraet waere eine doppelte Zaehlung: die Erzeugung
+     * erschiene doppelt so gross, die Grenze wuerde zu hoch gesetzt und
+     * die Bremse bremste zu wenig. Mit drei Feldern und Zwischenablage ist
+     * das ein realistischer Griff, deshalb wird es geprueft. */
+    $eb_gesehen = array();
+    foreach (eb_erzeugungsfelder() as $k) {
+        $a = strtolower(trim((string) $cfg[$k]['adresse']));
+        $p = strtolower(trim((string) $cfg[$k]['pfad']));
+        if ($cfg[$k]['art'] === 'aus' || $a === '') { continue; }
+        $marke = $cfg[$k]['art'] . '|' . $a . '|' . $p;
+        if (isset($eb_gesehen[$marke])) { $m[] = 'MANGEL.ERZEUGUNG_DOPPELT'; }
+        $eb_gesehen[$marke] = 1;
     }
     if ($cfg['q_netz']['art'] === 'aus') { $m[] = 'MANGEL.KEIN_ZAEHLER'; }
     elseif ($cfg['q_netz']['adresse'] === '') { $m[] = 'MANGEL.ZAEHLER_OHNE_ADRESSE'; }
@@ -725,11 +824,19 @@ function eb_maengel($cfg)
                     $m[] = 'MANGEL.SUNSPEC_RUECKFALL_ZU_KURZ';
                 }
             }
-            /* Die offene Frage aus dem Handbuch: Werte unter zehn Prozent
-             * koennen je nach Software-Stand einen erzwungenen Standby
-             * ausloesen - kein Einspeisebetrieb mehr, statt einer
-             * Drosselung. Solange das nicht am Geraet gemessen ist, soll
-             * die Untergrenze nicht darunter liegen. */
+            /* Frueher offen, am 19.08.2026 GEMESSEN (Symo 8.2-3-M,
+             * Software 0.3.30.2): bis hinunter zu 0,09 % trat KEIN
+             * erzwungener Standby ein - das Geraet drosselte sauber
+             * (8,00 % -> 654 W, 2,00 % -> 162 W) und nahm die Betriebsart
+             * nach dem Zeitablauf selbst zurueck. Die Handbuchwarnung gilt
+             * also nicht fuer jede Software-Fassung.
+             *
+             * Der Hinweis bleibt trotzdem, aus zwei anderen Gruenden:
+             * das Handbuch nennt die Gefahr ausdruecklich softwareabhaengig,
+             * und unterhalb von rund einem halben Prozent der Nennleistung
+             * folgt das Geraet der Vorgabe nicht mehr (Vorgabe 7 W,
+             * gehalten 39 W). Eine Untergrenze darunter ist wirkungslos,
+             * nicht scharf. */
             if ((int) $s['spitze_w'] > 0
                 && (int) $cfg['drossel_min_w'] < (int) ceil(0.10 * (int) $s['spitze_w'])) {
                 $m[] = 'MANGEL.SUNSPEC_UNTER_ZEHN';

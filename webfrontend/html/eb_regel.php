@@ -17,7 +17,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('EB_KERN', '1.2.0');
+define('EB_KERN', '1.3.0');
 
 /* Was das Stellwerk in einem Durchlauf tun kann. */
 define('EB_NICHTS',   0);
@@ -600,6 +600,55 @@ function eb_sunspec_auffrischen_s($rueckfall_s, $takt_s)
     return max(max(1, (int) $takt_s), (int) floor($r / 2));
 }
 
+/**
+ * Mehrere Erzeugungsmessungen zu EINER Anlagenleistung addieren.
+ *
+ * $teile: Liste von array(wert|null, alter, anlass) - je Quelle eine, in
+ *         der Reihenfolge, in der sie in der Einstellung stehen.
+ * Rueckgabe: array(summe|null, alter, anlass)
+ *
+ * ALLES ODER NICHTS. Fehlt einer der eingetragenen Summanden, ist die
+ * Summe nicht die Summe der uebrigen, sondern UNBEKANNT.
+ *
+ * Der Grund steht im Kern: er rechnet die neue Grenze als "Erzeugung minus
+ * Ueberschuss". Eine Teilsumme ist systematisch zu klein, also wuerde die
+ * Grenze zu tief gesetzt - und zwar umso tiefer, je mehr Wechselrichter
+ * ausgefallen sind. Genau andersherum, als es richtig waere. Eine
+ * unbekannte Erzeugung dagegen behandelt der Kern schon heute richtig: er
+ * faellt auf die letzte Drosselung zurueck und meldet es.
+ *
+ * Am 19.08.2026 an einer Anlage mit zwei Wechselrichtern gemessen, wie
+ * gross der Fehler waere: Hybrid -642 W (er laedt), Symo 8.2 +1371 W,
+ * Summe 729 W. Wer nur den ersten liest, bekommt Betrag UND Vorzeichen
+ * falsch.
+ *
+ * Das Alter ist das GROESSTE der Teilalter - eine Summe ist so frisch wie
+ * ihr aeltester Summand.
+ */
+function eb_erzeugung_summe($teile)
+{
+    $summe = 0.0;
+    $alter = -1.0;
+    $wieviele = 0;
+    $nr = 0;
+    foreach ($teile as $teil) {
+        $nr++;
+        $wert = isset($teil[0]) ? $teil[0] : null;
+        $a = isset($teil[1]) ? (float) $teil[1] : -1.0;
+        $anlass = isset($teil[2]) ? (string) $teil[2] : 'fehlt';
+        // Eine nicht eingetragene Quelle ist kein fehlender Summand.
+        if ($anlass === 'aus') { continue; }
+        $wieviele++;
+        if ($wert === null) {
+            return array(null, -1.0, ($nr === 1) ? $anlass : ('quelle' . $nr . '_' . $anlass));
+        }
+        $summe += (float) $wert;
+        if ($a > $alter) { $alter = $a; }
+    }
+    if ($wieviele === 0) { return array(null, -1.0, 'aus'); }
+    return array($summe, ($alter < 0.0) ? 0.0 : $alter, 'gut');
+}
+
 /* ==================================================================
  * Selbsttest
  *
@@ -943,6 +992,48 @@ function eb_selbsttest($ausgabe = true)
     $pruef('kein Rueckfall: nichts aufzufrischen', eb_sunspec_auffrischen_s(0, 5), 0);
     $pruef('Rueckfall kuerzer als der Takt: hoechstens im Takt',
            eb_sunspec_auffrischen_s(4, 5), 5);
+
+    // ---- Erzeugung aus mehreren Quellen ----
+    $g = function ($w, $a) { return array($w, $a, 'gut'); };
+    $aus = array(null, -1.0, 'aus');
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(1371, 0.0), $g(-642, 0.0)));
+    $pruef('zwei Wechselrichter werden addiert', $s, 729);
+    $pruef('und die Summe gilt als gut', $an, 'gut');
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(1000, 4.0), $g(500, 17.0)));
+    $pruef('das Alter ist das groesste der Teilalter', $a, 17.0);
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(1000, 0.0), $aus));
+    $pruef('eine nicht eingetragene Quelle zaehlt nicht', $s, 1000);
+    $pruef('und macht die Summe nicht ungueltig', $an, 'gut');
+    list($s, $a, $an) = eb_erzeugung_summe(array($aus, $g(1371, 0.0)));
+    $pruef('nur die zweite eingetragen: sie allein', $s, 1371);
+    /* Der Kern dieser Sache: eine Teilsumme waere zu klein und wuerde zu
+     * scharf drosseln. Also gibt es keine Teilsumme. */
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(1371, 0.0), array(null, -1.0, 'modbus_unerreichbar')));
+    $pruef('faellt ein Summand aus, ist die Summe unbekannt', $s, null);
+    $pruef('und der Anlass nennt die zweite Quelle', $an, 'quelle2_modbus_unerreichbar');
+    list($s, $a, $an) = eb_erzeugung_summe(array(array(null, -1.0, 'zu_alt'), $g(500, 0.0)));
+    $pruef('faellt die erste aus, ebenso', $s, null);
+    $pruef('und der Anlass bleibt unveraendert', $an, 'zu_alt');
+    list($s, $a, $an) = eb_erzeugung_summe(array($aus, $aus));
+    $pruef('gar keine Quelle: unbekannt', $s, null);
+    $pruef('und der Anlass ist aus', $an, 'aus');
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(0, 0.0), $g(0, 0.0)));
+    $pruef('zweimal null ist eine gueltige Summe', $an, 'gut');
+    /* Drei Quellen - seit 0.9.8 sind es drei Felder, und die Rechnung
+     * nimmt beliebig viele entgegen. Eine vierte waere eine Zeile in
+     * eb_quellenfelder() und kaeme hier ohne Aenderung an. */
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(1400, 0.0), $g(1800, 0.0), $g(900, 0.0)));
+    $pruef('drei Wechselrichter werden addiert', $s, 4100);
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(1400, 0.0), $g(1800, 0.0), $aus));
+    $pruef('die dritte darf leer bleiben', $s, 3200);
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(1400, 0.0), $g(1800, 0.0),
+                                                 array(null, -1.0, 'modbus_unerreichbar')));
+    $pruef('faellt die dritte aus, ist alles unbekannt', $s, null);
+    $pruef('und der Anlass nennt die dritte', $an, 'quelle3_modbus_unerreichbar');
+    list($s, $a, $an) = eb_erzeugung_summe(array($aus, $aus, $g(700, 0.0)));
+    $pruef('nur die dritte eingetragen: sie allein', $s, 700);
+    list($s, $a, $an) = eb_erzeugung_summe(array($g(100, 2.0), $g(200, 40.0), $g(300, 9.0)));
+    $pruef('das Alter bleibt das groesste von dreien', $a, 40.0);
 
     if ($ausgabe) {
         echo sprintf("\nEinspeisebremse-Kern %s: %d Faelle geprueft, %d Fehlschlaege.\n",

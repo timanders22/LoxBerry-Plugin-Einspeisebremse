@@ -83,7 +83,11 @@ function eb_broker()
 function eb_themen($cfg)
 {
     $t = array();
-    foreach (array('q_netz', 'q_erzeugung', 'q_soc', 'q_lade') as $k) {
+    /* q_netz2 fehlte hier bis 0.9.8: ein Ersatzzaehler ueber MQTT wurde nie
+     * abonniert und lieferte deshalb NIE einen Wert - stillschweigend. Ein
+     * Ersatzweg, der nicht traegt, ist schlimmer als keiner. Seither kommt
+     * die Liste aus eb_quellenfelder() und kann nicht mehr abweichen. */
+    foreach (array_keys(eb_quellenfelder()) as $k) {
         if ($cfg[$k]['art'] === 'mqtt' && $cfg[$k]['adresse'] !== '') {
             $t[$cfg[$k]['adresse']] = 1;
         }
@@ -657,7 +661,15 @@ function eb_durchlauf($cfg, $stand)
     eb_http_frisch();
 
     list($netz, $netz_alter, $netz_anlass) = eb_quelle_lesen($cfg['q_netz']);
-    list($erz, $erz_alter, $erz_anlass) = eb_quelle_lesen($cfg['q_erzeugung']);
+    /* Die Erzeugung darf aus MEHREREN Quellen kommen und wird addiert - eine
+     * Anlage mit zwei Wechselrichtern ist keine halbe Anlage. Faellt ein
+     * eingetragener Summand aus, liefert eb_erzeugung_summe() null statt
+     * einer Teilsumme; warum, steht dort. */
+    $eb_teile = array();
+    foreach (eb_erzeugungsfelder() as $eb_qk) {
+        $eb_teile[] = eb_quelle_lesen($cfg[$eb_qk]);
+    }
+    list($erz, $erz_alter, $erz_anlass) = eb_erzeugung_summe($eb_teile);
     list($soc, $soc_alter, $soc_anlass) = eb_quelle_lesen($cfg['q_soc']);
     list($lade, $lade_alter, $lade_anlass) = eb_quelle_lesen($cfg['q_lade']);
 
@@ -1128,8 +1140,8 @@ if ($eb_hat('--probe')) {
     // Dem Zuhoerer einen Augenblick geben - ohne retained-Flag kommt sonst
     // nichts an, und das saehe nach einem Fehler aus, wo keiner ist.
     for ($i = 0; $i < 30; $i++) { usleep(100000); eb_hoerer_abholen(); }
-    foreach (array('q_netz' => 'Netz', 'q_netz2' => 'Netz (Ersatz)', 'q_erzeugung' => 'Erzeugung',
-                   'q_soc' => 'Ladestand', 'q_lade' => 'Ladeleistung') as $k => $name) {
+    foreach (eb_quellenfelder() as $k => $eb_f) {
+        $name = $eb_f['kurz'];
         list($w, $a, $anlass) = eb_quelle_lesen($cfg[$k]);
         $grenze = max(10.0, eb_zahl($cfg['quelle_alter_s'], 300.0));
         if ($k !== 'q_netz' && $w !== null && $a >= 0.0 && $a > $grenze) {
