@@ -38,6 +38,12 @@ fi
 # config/plugins/<ordner>/. Eine Sicherungsdatei DANEBEN bliebe liegen.
 rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
 rm -rf "$BASE/data/plugins/$PFOLDER"
+# Dasselbe gilt seit 0.9.11 fuer die Sicherung beim Aktualisieren: sie liegt
+# als data/plugins/<ordner>.upgrade_sicherung NEBEN dem Datenordner, damit
+# purge_installation sie im Upgrade-Zweig nicht mitloescht. Genau deshalb
+# uebersteht sie auch das Deinstallieren - und muss hier weg. Darin liegt
+# verlauf.json, keine Zugangsdaten, aber Verlaufsdaten sind auch Daten.
+rm -rf "$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 
 echo "<OK> Einspeisebremse entfernt, Sicherungsdatei geloescht."
 exit 0
