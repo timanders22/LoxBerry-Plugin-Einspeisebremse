@@ -407,6 +407,54 @@ $eb_rahmen = class_exists('LBWeb', false);
 if ($eb_rahmen) {
     LBWeb::lbheader(eb_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($eb_post && isset($_POST['eb_sichern'])) {
+    $eb_js = json_encode(eb_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($eb_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="einspeisebremse_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $eb_js;
+        exit;
+    }
+    $eb_fehler[] = eb_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($eb_post && isset($_POST['eb_zurueck'])) {
+    if (!isset($_FILES['eb_sicherung']) || !is_array($_FILES['eb_sicherung'])
+        || !isset($_FILES['eb_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['eb_sicherung']['tmp_name'])) {
+        $eb_fehler[] = eb_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['eb_sicherung']['size'] > 262144) {
+        $eb_fehler[] = eb_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($eb_neu, $eb_mangel, $eb_n) = eb_sicherung_lesen(
+            (string) @file_get_contents($_FILES['eb_sicherung']['tmp_name']));
+        if ($eb_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $eb_fehler[] = eb_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $eb_mangel);
+        } elseif (eb_config_speichern($eb_neu)) {
+            $eb_meldungen[] = sprintf(eb_t('EINST.SICH_UEBERNOMMEN'), $eb_n);
+        } else {
+            $eb_fehler[] = eb_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard: eigener Behaelter, kein Schattenwurf, Reiter im Fluss */
@@ -777,6 +825,25 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern" value="1"><?= eb_e(eb_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+
+<h2><?= eb_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= eb_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= eb_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="eb_sichern" value="1"><?= eb_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="eb_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="eb_zurueck" value="1"><?= eb_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
