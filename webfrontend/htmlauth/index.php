@@ -55,6 +55,24 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $eb_rei
 
 $eb_meldungen = array();
 $eb_fehler = array();
+
+/* ---------------------------------------------------------------- *
+ * Der Wachposten - EIN Posten, vor allen Handlern.
+ * Abgewiesen heisst gemeldet, und es wird NICHTS ausgefuehrt: $_POST
+ * wird geleert, nur der aktive Reiter bleibt stehen, damit der Bediener
+ * nach der Abweisung dort steht, wo er war.
+ * ---------------------------------------------------------------- */
+$eb_wache = eb_wachposten();
+if ($eb_wache !== '') {
+    $eb_reiter_merk = isset($_POST['activetab']) && is_string($_POST['activetab'])
+        ? (string) $_POST['activetab'] : null;
+    $_POST = array();
+    if ($eb_reiter_merk !== null) {
+        $_POST['activetab'] = $eb_reiter_merk;
+    }
+    $eb_fehler[] = $eb_wache;
+}
+
 $eb_testausgabe = '';
 $eb_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
@@ -646,16 +664,19 @@ if ($eb_rahmen) {
 <div class="sm-step"><?= eb_t('DIENST.ERKLAERUNG') ?></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="dienst"
             value="start"><?= eb_e(eb_t('DIENST.K_START')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst"
             value="restart"><?= eb_e(eb_t('DIENST.K_NEUSTART')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst"
             value="stop"><?= eb_e(eb_t('DIENST.K_STOP')) ?></button>
@@ -671,6 +692,7 @@ if ($eb_rahmen) {
 <?php } ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="schalten"
             value="<?= !empty($eb_cfg['ein']) ? '0' : '1' ?>"><?= !empty($eb_cfg['ein']) ? eb_e(eb_t('EINST.K_AUS')) : eb_e(eb_t('EINST.K_EIN')) ?></button>
@@ -680,6 +702,7 @@ if ($eb_rahmen) {
 <h3><?= eb_e(eb_t('VORLAGE.H')) ?></h3>
 <div class="sm-step"><?= eb_t('VORLAGE.ERKLAERUNG') ?></div>
 <form action="index.php" method="post">
+  <?php echo eb_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <table class="sm-tbl"><tr>
   <td><label for="eb_vq"><?= eb_e(eb_t('VORLAGE.H')) ?><br>
@@ -710,6 +733,7 @@ if ($eb_rahmen) {
 </ul>
 
 <form action="index.php" method="post">
+  <?php echo eb_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="<?= eb_e($eb_tab) ?>">
 <input data-role="none" type="hidden" name="formular" value="einstellungen">
 
@@ -854,10 +878,12 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="eb_sichern" value="1"><?= eb_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="eb_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="eb_zurueck" value="1"><?= eb_t('EINST.K_ZURUECK') ?></button>
@@ -878,6 +904,7 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 <?php } ?>
 
 <form action="index.php" method="post">
+  <?php echo eb_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <input data-role="none" type="hidden" name="formular" value="mqtt">
 <div class="sm-feld">
@@ -930,10 +957,12 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vi"><?= eb_e(eb_t('LOX.K_VI')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= eb_e(eb_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
@@ -988,36 +1017,43 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
      ergänzt, ergänzt auch die Positivliste in eb_test.php. -->
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test"
             value="probe"><?= eb_e(eb_t('TEST.K_PROBE')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test"
             value="trocken"><?= eb_e(eb_t('TEST.K_TROCKEN')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test"
             value="maengel"><?= eb_e(eb_t('TEST.K_MAENGEL')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test"
             value="selbsttest"><?= eb_e(eb_t('TEST.K_SELBSTTEST')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test"
             value="zeile"><?= eb_e(eb_t('TEST.K_ZEILE')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test"
             value="mqtt"><?= eb_e(eb_t('TEST.K_MQTT')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test"
             value="endpunkt"><?= eb_e(eb_t('TEST.K_ENDPUNKT')) ?></button>
@@ -1048,6 +1084,7 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 <h2><?= eb_e(eb_t('TEST.H_WENN')) ?></h2>
 <div class="sm-step"><?= eb_t('TEST.WENN_ERKLAERUNG') ?></div>
 <form action="index.php" method="post">
+  <?php echo eb_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
 <table class="sm-tbl"><tr>
   <td><label><?= eb_e(eb_t('TEST.W_NETZ')) ?><br>
@@ -1089,6 +1126,7 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= eb_e(eb_t('LOG.K_LEEREN')) ?></button>
   </form>
