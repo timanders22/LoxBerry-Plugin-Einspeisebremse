@@ -923,6 +923,7 @@ function eb_log($text)
     /* log/plugins liegt auf einer Ramdisk - eine unbegrenzt wachsende Datei
      * frisst Arbeitsspeicher, nicht Plattenplatz. Bei einem Takt von fuenf
      * Sekunden ist das keine ferne Moeglichkeit. */
+    clearstatcache(true, $p['log']);
     if (is_file($p['log']) && filesize($p['log']) > 512000) {
         $rest = array_slice(file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -400);
         @file_put_contents($p['log'], implode("\n", $rest) . "\n");
