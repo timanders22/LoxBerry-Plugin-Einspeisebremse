@@ -1017,7 +1017,8 @@ function eb_token()
 function eb_mqtt_zustand()
 {
     $p = eb_paths();
-    $leer = array('gefunden' => 0, 'autostart' => 0, 'udpport' => 0);
+    $leer = array('gefunden' => 0, 'autostart' => 0, 'udpport' => 0,
+                  'fassung' => 0);
     if ($p['home'] === '') { return $leer; }
     $gen = eb_json_lesen($p['home'] . '/config/system/general.json');
     $m = array();
@@ -1033,6 +1034,15 @@ function eb_mqtt_zustand()
         'autostart' => in_array((string) $hol('Gatewayautostart', 'gatewayautostart'),
                                 array('1', 'true'), true) ? 1 : 0,
         'udpport'   => (int) $hol('Udpinport', 'udpinport'),
+        /* Fassung des Gateways. 0 heisst NICHT LESBAR und wird
+         * ausdruecklich nicht auf 1 vorbelegt: "unbekannt" und
+         * "Fassung 1" sind verschiedene Aussagen. Gemessen am Kern
+         * (webfrontend/htmlauth/system/mqtt-gateway.cgi):
+         *     $gatewayversion = $generaljson->{Mqtt}->{Gatewayversion} // 1;
+         *     $template->param("FORM_DISABLE_BUTTONS", 1) if $gatewayversion == 2;
+         * Ab Fassung 2 sind die Eingabeknoepfe der Abo-Seite abgeschaltet -
+         * dort ist nichts einzutragen. */
+        'fassung'   => (int) $hol('Gatewayversion', 'gatewayversion'),
     );
 }
 

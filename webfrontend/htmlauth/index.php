@@ -934,8 +934,26 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 <p class="sm-hilfe"><?= eb_t('MQTT.STELLERN_HILFE') ?></p>
 
 <h3><?= eb_e(eb_t('MQTT.H_ABO')) ?></h3>
-<div class="sm-step"><?= eb_t('MQTT.ABO_HILFE') ?>
-  <p><span class="sm-mono"><?= eb_e($eb_cfg['mqtt_topic']) ?>/#</span></p></div>
+<?php
+/* Die Themenzeile ist eine AUSKUNFT und bleibt unbedingt stehen. Die
+ * Aufforderung, sie einzutragen, gilt dagegen nur unter Gateway V1 -
+ * sie ist deshalb in MQTT.ABO_PFLICHT gewandert. Ist die Fassung nicht
+ * lesbar (0), stehen BEIDE Faelle da: einen von beiden zu behaupten
+ * waere fuer die Haelfte der Anlagen falsch. */
+$eb_gwf = (int) $eb_mqtt['fassung'];
+?>
+<div class="sm-step"><?= eb_t('MQTT.ABO_EINLEITUNG') ?>
+  <p><span class="sm-mono"><?= eb_e($eb_cfg['mqtt_topic']) ?>/#</span></p>
+<?php if ($eb_gwf >= 2) { ?>
+<div class="sm-hinweis"><?= eb_t('MQTT.ABO_V2') ?></div>
+<?php } elseif ($eb_gwf === 1) { ?>
+<div class="sm-warnung"><?= eb_t('MQTT.ABO_PFLICHT') ?></div>
+<?php } else { ?>
+<div class="sm-warnung"><?= eb_t('MQTT.ABO_PFLICHT') ?></div>
+<div class="sm-hinweis"><?= eb_t('MQTT.ABO_V2') ?></div>
+<div class="sm-hilfe"><?= eb_t('MQTT.ABO_UNBEKANNT') ?></div>
+<?php } ?>
+</div>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
