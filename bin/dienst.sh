@@ -78,14 +78,31 @@ case "$1" in
         if ! laeuft; then echo "Einspeisebremse laeuft nicht."; rm -f "$PIDF"; exit 0; fi
         PID=$(cat "$PIDF")
         # SIGTERM, nicht SIGKILL: der Dienst raeumt seinen MQTT-Zuhoerer ab.
-        kill "$PID" 2>/dev/null
+        # Die WIRKUNG pruefen, nicht den Rueckgabewert. Bis 0.9.17 wurde
+        # das Ergebnis von kill verworfen, nach dem kill -9 nicht noch
+        # einmal nachgesehen, die PID-Datei unbedingt geloescht und
+        # unbedingt Erfolg gemeldet - genau der Fall, den der
+        # Kopfkommentar oben beschreibt. Ist die PID-Datei erst fort,
+        # meldet laeuft() dauerhaft "nein", und der Minutentakt startet
+        # einen ZWEITEN Dienst neben den laufenden. Zwei Dienste stellen
+        # unabhaengig voneinander Grenzen an dieselben Wechselrichter.
+        if ! kill "$PID" 2>/dev/null; then
+            echo "Das Anhalten wurde abgewiesen (PID $PID gehoert einem anderen Benutzer?)." >&2
+        fi
         for i in 1 2 3 4 5 6 7 8 9 10; do laeuft || break; sleep 1; done
         if laeuft; then kill -9 "$PID" 2>/dev/null; sleep 1; fi
+        if laeuft; then
+            echo "Einspeisebremse liess sich NICHT anhalten - PID $PID laeuft weiter." >&2
+            echo "Die PID-Datei bleibt liegen, damit der Waechter keinen zweiten Dienst startet." >&2
+            exit 1
+        fi
         rm -f "$PIDF"
         echo "Einspeisebremse angehalten. Die zuletzt gestellte Grenze bleibt bestehen."
         ;;
     restart)
-        "$0" stop
+        # Ohne die Abbruchbedingung ist restart der kuerzeste Weg zum
+        # Doppeldienst: stop meldet Erfolg, start findet keine PID-Datei.
+        "$0" stop || exit 1
         "$0" start
         ;;
     status)

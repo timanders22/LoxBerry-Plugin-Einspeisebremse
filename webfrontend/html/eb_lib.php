@@ -254,7 +254,7 @@ function eb_json_schreiben($pfad, $daten, $rechte = null)
  * Eine Modbus-Adresse zerlegen. Rueckgabe: array oder null.
  *
  * Form:  IP[:Port]/Geraeteadresse/Register/Typ[/Funktionscode]
- * Beispiel: 192.168.178.40:502/1/52/float32/4
+ * Beispiel: 192.0.2.40:502/1/52/float32/4
  *
  * ES WIRD NICHTS ZURECHTGEBOGEN. Was nicht auf das Muster passt, ergibt
  * null, und der Reiter Test sagt es. Ein halb verstandener Registerwert
@@ -291,15 +291,102 @@ function eb_quelle_richten($q)
     return $g;
 }
 
-function eb_config()
+/**
+ * Der zuerst festgestellte Zustand der Konfiguration, fuer die Dauer des
+ * Prozesses gehalten.
+ *
+ * Ein geheilter Schaden ist kein Nicht-Schaden. Der erste Aufruf von
+ * eb_config() stellt die Datei aus der Zweitschrift wieder her; der
+ * zweite - den der Reiter Test macht - saehe eine heile Datei und meldete
+ * "in Ordnung". Der Bediener erfuehre nie, dass etwas war. Deshalb wird
+ * der ERSTE Befund gemerkt und von einem spaeteren "ok" nicht
+ * ueberschrieben.
+ *
+ * Zustaende: ok, leer, aus der Zweitschrift, kaputt, kaputt ohne Zweitschrift
+ */
+function eb_config_lage($setzen = null)
+{
+    static $lage = 'ok';
+    static $fest = false;
+    if ($setzen !== null && !$fest) { $lage = (string) $setzen; $fest = true; }
+    return $lage;
+}
+
+/**
+ * Eine Meldung genau einmal je Merker schreiben.
+ *
+ * Der Dienst laeuft im Fuenfsekundentakt. Ohne diese Bremse stuenden
+ * 17280 gleichlautende Zeilen am Tag im Protokoll, und das Protokoll
+ * liegt auf einer Ramdisk.
+ */
+function eb_log_wenn_neu($merker, $text)
+{
+    $p = eb_paths();
+    $f = $p['datadir'] . '/.meld_' . preg_replace('/[^a-z0-9_]/', '', (string) $merker);
+    if (is_file($f)) { return false; }
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    @file_put_contents($f, (string) time());
+    eb_log($text);
+    return true;
+}
+
+/**
+ * Die Konfiguration lesen.
+ *
+ * $erzeugen = false heisst: NUR lesen. Kein mkdir, kein Zurueckschreiben,
+ * keine Protokollzeile. Der unangemeldete Endpunkt ruft so - er hat sich
+ * noch nicht ausgewiesen, und was er anlegte, legte ein Fremder an.
+ *
+ * Gesund ist die Konfiguration NICHT daran zu erkennen, dass sie nicht
+ * leer ist. Eine halb geschriebene Datei - Stromausfall, volle Ramdisk -
+ * ist weder leer noch "{}"; genau fuer sie gibt es die Zweitschrift.
+ * Erkannt wird sie am INHALT: gueltiges JSON UND das Merkmal, das nur
+ * eine echte Konfiguration traegt.
+ */
+function eb_config($erzeugen = true)
 {
     $p = eb_paths();
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
-        @copy($p['sicherung'], $p['config']);
+    $daten = ($roh === '' || $roh === '{}') ? null : json_decode($roh, true);
+    $leer = ($roh === '' || $roh === '{}');
+    $heil = is_array($daten) && array_key_exists('aktionstoken', $daten);
+    $kaputt = (!$leer && !$heil);
+
+    if ($kaputt) { eb_config_lage('kaputt'); }
+    elseif ($leer && $roh !== '') { eb_config_lage('leer'); }
+
+    if (!$heil) {
+        /* Lesen, PRUEFEN, hoechstens einmal zurueckschreiben, einmal melden. */
+        $sroh = is_file($p['sicherung'])
+            ? trim((string) @file_get_contents($p['sicherung'])) : '';
+        $sd = $sroh === '' ? null : json_decode($sroh, true);
+        if (is_array($sd) && array_key_exists('aktionstoken', $sd)) {
+            $daten = $sd;
+            eb_config_lage('aus der Zweitschrift');
+            if ($erzeugen) {
+                /* Die beschaedigte Datei bleibt als Beleg liegen - einmal. */
+                if ($kaputt && !is_file($p['config'] . '.kaputt')) {
+                    @copy($p['config'], $p['config'] . '.kaputt');
+                    @chmod($p['config'] . '.kaputt', 0600);
+                }
+                @mkdir($p['configdir'], 0775, true);
+                if (eb_json_schreiben($p['config'], $sd, 0600)) {
+                    eb_log_wenn_neu('konfig_geheilt',
+                        'Die Konfiguration war ' . ($kaputt ? 'beschaedigt' : 'leer')
+                        . ' und wurde aus der Zweitschrift wiederhergestellt.');
+                }
+            }
+        } elseif ($kaputt) {
+            eb_config_lage('kaputt ohne Zweitschrift');
+            if ($erzeugen) {
+                eb_log_wenn_neu('konfig_kaputt',
+                    'Die Konfiguration ist unlesbar und es gibt keine brauchbare '
+                    . 'Zweitschrift. Es gelten die Werkseinstellungen.');
+            }
+        }
     }
-    $cfg = array_merge(eb_vorgaben(), eb_json_lesen($p['config']));
+    if (!is_array($daten)) { $daten = array(); }
+    $cfg = array_merge(eb_vorgaben(), $daten);
 
     foreach (array_keys(eb_quellenfelder()) as $k) {
         $cfg[$k] = eb_quelle_richten($cfg[$k]);
@@ -347,7 +434,16 @@ function eb_config()
                    'lade_max_w' => array(0, 1000000), 'wirkung_s' => array(5, 600), 'frei_w' => array(0, 1000000),
                    'quelle_alter_s' => array(10, 86400),
                    'takt' => array(2, 300)) as $k => $gr) {
-        $cfg[$k] = (int) max($gr[0], min($gr[1], eb_zahl($cfg[$k], $gr[0])));
+        /* Der Ersatzwert kommt aus DERSELBEN Quelle wie der Schluessel.
+         * Frueher stand hier $gr[0], also die untere Bereichsgrenze -
+         * ein unlesbares frei_w wurde damit 0 statt 100000, und eine 0
+         * dort schaltet die Anlage beim Ausschalten der Bremse ab.
+         * Nur ein FEHLENDER Schluessel bekam die richtige Vorgabe. */
+        $vg = eb_vorgaben();
+        $ers = isset($vg[$k]) ? $vg[$k] : $gr[0];
+        $war = $cfg[$k];
+        $cfg[$k] = (int) max($gr[0], min($gr[1], eb_zahl($cfg[$k], $ers)));
+        if (!is_numeric($war) && $war !== null) { eb_config_lage('unlesbarer Wert'); }
     }
     $t = preg_replace('#[^A-Za-z0-9_/\-]#', '', (string) $cfg['mqtt_topic']);
     $cfg['mqtt_topic'] = trim($t, '/') !== '' ? trim($t, '/') : 'einspeisebremse';
@@ -358,9 +454,50 @@ function eb_config_speichern($cfg)
 {
     $p = eb_paths();
     if (!eb_json_schreiben($p['config'], $cfg, 0600)) { return false; }
+    /* Die Zweitschrift wird NUR fortgeschrieben, wenn der Stand, der
+     * gerade geschrieben wurde, das Merkmal traegt - und nicht, solange
+     * die Konfiguration in diesem Prozess als beschaedigt gilt. Sonst
+     * kopiert der erste Seitenaufruf nach einem Schaden die
+     * Werkseinstellung ueber die letzte heile Sicherung. */
+    $lage = eb_config_lage();
+    if (trim((string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '')) === ''
+        || $lage === 'kaputt' || $lage === 'kaputt ohne Zweitschrift') {
+        return true;
+    }
     @copy($p['config'], $p['sicherung']);
     @chmod($p['sicherung'], 0600);
     return true;
+}
+
+/**
+ * EIN Feld der Konfiguration aendern, unter Sperre.
+ *
+ * Der Endpunkt und die Oberflaeche schreiben dieselbe Datei. Ohne Sperre
+ * liest der Endpunkt den Stand VOR dem Speichern des Bedieners, setzt
+ * sein eines Feld und schreibt alles zurueck - die eben gespeicherten
+ * Einstellungen waeren fort, und die Oberflaeche haette "gespeichert"
+ * gemeldet. eb_json_schreiben() ist je Schreibvorgang unteilbar, das
+ * genuegt hier nicht: unteilbar sein muss Lesen-Aendern-Schreiben.
+ */
+function eb_config_feld_setzen($schluessel, $wert)
+{
+    $p = eb_paths();
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    $fp = @fopen($p['datadir'] . '/config.lock', 'c+');
+    if ($fp === false) {
+        $cfg = eb_config();
+        $cfg[$schluessel] = $wert;
+        return eb_config_speichern($cfg);
+    }
+    $ok = false;
+    if (@flock($fp, LOCK_EX)) {
+        $cfg = eb_config();
+        $cfg[$schluessel] = $wert;
+        $ok = eb_config_speichern($cfg);
+        @flock($fp, LOCK_UN);
+    }
+    fclose($fp);
+    return $ok;
 }
 
 /**
@@ -406,7 +543,7 @@ function eb_quellvorlagen()
          * der Hinweis statt einer stillen Annahme. */
         'eastron' => array(
             'bez' => 'VORLAGE.EASTRON', 'hinweis' => 'VORLAGE.EASTRON_HINWEIS',
-            'feld' => 'VORLAGE.F_IP', 'vorgabe' => '192.168.178.40',
+            'feld' => 'VORLAGE.F_IP', 'vorgabe' => '192.0.2.40',
             'quellen' => array(
                 'q_netz' => array('art' => 'modbus', 'adresse' => '%s:502/1/52/float32/4',
                                   'pfad' => '', 'faktor' => 1.0, 'invertieren' => 0),
@@ -414,7 +551,7 @@ function eb_quellvorlagen()
         ),
         'fronius' => array(
             'bez' => 'VORLAGE.FRONIUS', 'hinweis' => 'VORLAGE.FRONIUS_HINWEIS',
-            'feld' => 'VORLAGE.F_IP', 'vorgabe' => '192.168.178.31',
+            'feld' => 'VORLAGE.F_IP', 'vorgabe' => '192.0.2.31',
             'quellen' => array(
                 'q_netz' => array('art' => 'http',
                     'adresse' => 'http://%s/solar_api/v1/GetPowerFlowRealtimeData.fcgi',
@@ -472,7 +609,7 @@ function eb_quellvorlagen()
          * positiv und wird deshalb umgedreht. */
         'fronius_modbus' => array(
             'bez' => 'VORLAGE.FRONIUS_MODBUS', 'hinweis' => 'VORLAGE.FRONIUS_MODBUS_HINWEIS',
-            'feld' => 'VORLAGE.F_IP', 'vorgabe' => '192.168.178.31',
+            'feld' => 'VORLAGE.F_IP', 'vorgabe' => '192.0.2.31',
             'quellen' => array(
                 'q_netz' => array('art' => 'modbus', 'adresse' => '%s:502/240/40097/float32/3',
                                   'pfad' => '', 'faktor' => 1.0, 'invertieren' => 0),
@@ -492,8 +629,9 @@ function eb_quellvorlagen()
          * Angabe des Anwenders in alle Adressen ein. Beim zweiten Geraet
          * unterscheiden sich aber ZWEI Dinge - die Adresse des
          * Datamanagers UND die Geraeteadresse dahinter. Am 19.08.2026
-         * gemessen: der Hybrid liegt auf 192.168.178.31 unter 1, der Symo
-         * 8.2 auf 192.168.178.30 unter 2.
+         * an zwei Fronius-Wechselrichtern gemessen: sie hingen an
+         * VERSCHIEDENEN Datamanagern, der Hybrid unter Geraeteadresse 1,
+         * der Symo 8.2 unter 2.
          *
          * Deshalb fragt diese Vorlage nicht nach der IP, sondern nach
          * "Host:Port/Geraeteadresse" - genau dem Stueck, das sich
@@ -508,7 +646,7 @@ function eb_quellvorlagen()
         'fronius_modbus_zweiter' => array(
             'bez' => 'VORLAGE.FRONIUS_MODBUS_ZWEITER',
             'hinweis' => 'VORLAGE.FRONIUS_MODBUS_ZWEITER_HINWEIS',
-            'feld' => 'VORLAGE.F_GERAET', 'vorgabe' => '192.168.178.30:502/2',
+            'feld' => 'VORLAGE.F_GERAET', 'vorgabe' => '192.0.2.30:502/2',
             'quellen' => array(
                 'q_erzeugung2' => array('art' => 'modbus', 'adresse' => '%s/40091/float32/3',
                                         'pfad' => '', 'faktor' => 1.0, 'invertieren' => 0),
@@ -870,6 +1008,26 @@ function eb_maengel($cfg)
             $m[] = 'MANGEL.PROZENT_OHNE_SPITZE';
         }
     }
+    /* Dieselbe Frage wie oben bei der Erzeugung, nur mit umgekehrtem
+     * Vorzeichen des Schadens: zwei Stellglieder auf DEMSELBEN Geraet
+     * bekommen von eb_aufteilen() je einen Anteil und schreiben
+     * nacheinander. Der letzte gewinnt - die Anlage steht am Ende auf dem
+     * Anteil eines einzigen Eintrags, also bei gleichen Anteilen auf der
+     * Haelfte der erlaubten Leistung. GESTELLT meldet trotzdem die volle
+     * Summe. Mangel, keine Sperre. */
+    $eb_stgesehen = array();
+    foreach (array_merge($st, array($cfg['sp_steller'])) as $s) {
+        if (trim((string) $s['name']) === '' || $s['art'] === 'aus') { continue; }
+        $a = strtolower(trim((string) $s['adresse']));
+        if ($a === '') { continue; }
+        if ($s['art'] === 'sunspec') {
+            $sa = eb_sunspec_zerlegen($s['adresse']);
+            if ($sa !== null) { $a = $sa['host'] . ':' . $sa['port'] . '/' . $sa['geraet']; }
+        }
+        $marke = $s['art'] . '|' . $a;
+        if (isset($eb_stgesehen[$marke])) { $m[] = 'MANGEL.STELLER_DOPPELT'; }
+        $eb_stgesehen[$marke] = 1;
+    }
     if (!$st) { $m[] = 'MANGEL.KEIN_STELLER'; }
     if (!empty($cfg['speicher_zuerst']) && (int) $cfg['lade_max_w'] <= 0) {
         $m[] = 'MANGEL.SPEICHER_OHNE_LEISTUNG';
@@ -938,6 +1096,7 @@ function eb_log($text)
  */
 function eb_log_ende($datei, $anzahl = 400, $block = 8192)
 {
+    if (!is_file($datei)) { return array(); }
     $fp = @fopen($datei, 'rb');
     if ($fp === false) { return array(); }
     fseek($fp, 0, SEEK_END);
@@ -1007,6 +1166,13 @@ function eb_token()
         @flock($fp, LOCK_UN);
     }
     fclose($fp);
+    /* Ohne diesen Rueckfall gaebe ein gescheitertes flock eine LEERE
+     * Zeichenkette zurueck, und die daraus gebaute Loxone-Adresse traege
+     * ein Token, das der Endpunkt nie annimmt. */
+    if (trim((string) $cfg['aktionstoken']) === '') {
+        $cfg['aktionstoken'] = eb_token_erzeugen();
+        eb_config_speichern($cfg);
+    }
     return (string) $cfg['aktionstoken'];
 }
 
@@ -1178,6 +1344,25 @@ function eb_endpunkt()
     return 'http://' . $host . '/plugins/' . $p['plugin'] . '/index.php';
 }
 
+/**
+ * Der Suchtext eines Feldes fuer einen virtuellen Eingang in Loxone.
+ *
+ * Das Trennzeichen ist Pflicht. Loxone sucht woertlich und nimmt die
+ * ERSTE Fundstelle: ohne das Semikolon traefe das Muster fuer ALTER in
+ * dieser Antwortzeile zuerst den Namen, der auf ALTER endet - der
+ * virtuelle Eingang laese still den falschen Wert. Die Antwortzeile
+ * traegt vor jedem Feldnamen ein Semikolon, auch vor dem ersten.
+ *
+ * Gemessen am 04.09.2026: von den 18 Feldnamen der Antwortzeile endet
+ * genau einer auf einen anderen. Heute rettete allein die Reihenfolge im
+ * sprintf; ein neues Feld oder ein Umsortieren haette es gekippt. Der
+ * Reiter Test misst die Eindeutigkeit jetzt selbst nach.
+ */
+function eb_check($feld)
+{
+    return '\i;' . $feld . '=\i\v';
+}
+
 function eb_vorlage()
 {
     $cmds = array();
@@ -1189,7 +1374,7 @@ function eb_vorlage()
             'title'   => eb_klartext($info[4]),
             'comment' => 'EB_' . $feld . ' - ' . eb_klartext($info[3])
                        . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
-            'check'   => '\i' . $feld . '=\i\v',
+            'check'   => eb_check($feld),
             'min'     => $info[1],
             'max'     => $info[2],
         );
@@ -1204,13 +1389,13 @@ function eb_vorlage()
         $cmds[] = array(
             'title'   => sprintf(eb_klartext('EB_TITEL.S_WATT'), $s['name']),
             'comment' => 'EB_' . $kurz . '_WATT - ' . eb_klartext('EB_FELD.S_WATT') . ' [W]',
-            'check'   => '\iS' . $nr . 'W=\i\v',
+            'check'   => eb_check('S' . $nr . 'W'),
             'min'     => 0, 'max' => 200000,
         );
         $cmds[] = array(
             'title'   => sprintf(eb_klartext('EB_TITEL.S_OK'), $s['name']),
             'comment' => 'EB_' . $kurz . '_OK - ' . eb_klartext('EB_FELD.S_OK'),
-            'check'   => '\iS' . $nr . 'OK=\i\v',
+            'check'   => eb_check('S' . $nr . 'OK'),
             'min'     => 0, 'max' => 1,
         );
     }
@@ -1335,6 +1520,99 @@ function eb_t($schluessel)
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
+/**
+ * Taugt ein Wert ueberhaupt fuer diese Konfiguration?
+ *
+ * Erste Stufe, unabhaengig vom Schluessel: kein Objekt, keine
+ * Steuerzeichen, nicht endlos lang. Die zweite Stufe (welcher Wert ist
+ * fuer DIESEN Schluessel zulaessig) steht in eb_wert_pruefen().
+ */
+function eb_wert_taugt($w)
+{
+    if (is_object($w)) { return false; }
+    /* null ist KEIN unbrauchbarer Wert: bei den Quellenfeldern heisst es
+     * "nicht eingerichtet", und eb_vorgaben() liefert es selbst. Ob null
+     * an DIESER Stelle zulaessig ist, entscheidet eb_wert_pruefen(). */
+    if (is_null($w) || is_array($w)) { return true; }
+    if (is_bool($w) || is_int($w) || is_float($w)) { return true; }
+    $s = (string) $w;
+    if (strlen($s) > 4096) { return false; }
+    return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $s) !== 1;
+}
+
+/**
+ * Ist der Wert fuer DIESEN Schluessel zulaessig?
+ *
+ * Geprueft wird gegen dieselbe Erwartung, die eb_config() ohnehin kennt -
+ * Zahlenbereiche, Aufzaehlungen, Feldform. Rueckgabe: '' oder der Grund.
+ */
+function eb_wert_pruefen($k, $w)
+{
+    $zahl = array('ziel_w' => array(0, 1000000), 'ziel1_w' => array(0, 1000000),
+        'ziel2_w' => array(0, 1000000), 'totband_w' => array(0, 10000),
+        'rampe_ab_w' => array(10, 1000000), 'rampe_auf_w' => array(10, 1000000),
+        'drossel_min_w' => array(0, 1000000), 'notfall_s' => array(5, 3600),
+        'notfall_w' => array(0, 1000000), 'soc_max' => array(10, 100),
+        'lade_max_w' => array(0, 1000000), 'wirkung_s' => array(5, 600),
+        'frei_w' => array(0, 1000000), 'quelle_alter_s' => array(10, 86400),
+        'takt' => array(2, 300), 'stufe' => array(0, 2));
+    if (isset($zahl[$k])) {
+        if ($w === null) { return 'fehlt'; }
+        if (!is_numeric($w)) { return 'keine Zahl'; }
+        $v = (float) $w;
+        if ($v < $zahl[$k][0] || $v > $zahl[$k][1]) {
+            return 'ausserhalb ' . $zahl[$k][0] . '..' . $zahl[$k][1];
+        }
+        return '';
+    }
+    if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
+                           'verlauf_ein'), true)) {
+        return in_array($w, array(0, 1, '0', '1', true, false), true) ? '' : 'nur 0 oder 1';
+    }
+    if ($k === 'aktionstoken') {
+        if ($w === null) { return 'fehlt'; }
+        if (!is_string($w)) { return 'keine Zeichenkette'; }
+        /* Weit gefasst, wie Token wirklich aussehen - ein zu enges Muster
+         * verwirft ein gueltiges Token, und der Schaden ist derselbe wie
+         * bei einem verlorenen. Leer ist zulaessig: das heisst "kein Token
+         * gesichert", nicht "unzulaessiger Wert". */
+        return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', $w) === 1 ? '' : 'unzulaessige Zeichen';
+    }
+    if ($k === 'mqtt_topic') {
+        return (is_string($w) && preg_match('#^[a-zA-Z0-9_/\-]{0,128}$#', $w) === 1)
+            ? '' : 'unzulaessiges Thema';
+    }
+    if ($k === 'steller') { return is_array($w) ? '' : 'kein Feld'; }
+    if ($k === 'sp_steller') { return is_array($w) ? '' : 'kein Feld'; }
+    /* Die sieben Quellenfelder: ein Feld, oder null fuer "nicht
+     * eingerichtet". Beides ist gueltig - eb_quelle_richten() macht
+     * daraus beim Lesen ein vollstaendiges Feld. */
+    if (array_key_exists($k, eb_quellenfelder())) {
+        return (is_array($w) || $w === null) ? '' : 'kein Feld';
+    }
+    if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
+                           'verlauf_ein', 'mqtt_topic'), true)) {
+        return 'unbrauchbarer Wert';
+    }
+    return (is_scalar($w) || is_array($w)) ? '' : 'unbrauchbarer Wert';
+}
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
+ * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
+ * zurueckspielt, will entweder den ganzen Stand oder gar keinen.
+ *
+ * Bis 0.9.17 wurde nur die SCHLUESSELMENGE geprueft, und auch die nur in
+ * eine Richtung. Gemessen am 04.09.2026: eine Datei mit einem einzigen
+ * Schluessel wurde angenommen, "1 Werte uebernommen" gemeldet - und die
+ * uebrigen 31 gingen still auf Werk, darunter das Aktionstoken. Ein
+ * Aktionstoken als Feld statt als Text ueberlebte, und (string) machte
+ * daraus das Wort "Array"; damit war der Endpunkt fuer jeden offen.
+ * Deshalb jetzt drei Wachen: alle Schluessel muessen da sein, jeder Wert
+ * wird geprueft, und der lesbare Kopf wird uebergangen statt beanstandet.
+ */
 function eb_sicherung_lesen($roh)
 {
     $mangel = array();
@@ -1344,20 +1622,63 @@ function eb_sicherung_lesen($roh)
     }
     $neu = eb_vorgaben();
     $bekannt = array_keys($neu);
+    $gesehen = array();
     $anzahl = 0;
     foreach ($daten as $k => $w) {
+        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet. */
+        if ($k !== '' && $k[0] === '_') { continue; }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(eb_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+                htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $grund = eb_wert_taugt($w) ? eb_wert_pruefen($k, $w) : 'unbrauchbarer Wert';
+        if ($grund !== '') {
+            $mangel[] = sprintf(eb_t('EINST.SICH_WERT'),
+                htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($grund, ENT_QUOTES, 'UTF-8'));
             continue;
         }
         $neu[$k] = $w;
+        $gesehen[$k] = 1;
         $anzahl++;
+    }
+    /* Was fehlt, ist genauso ein Mangel wie was zuviel ist - sonst geht
+     * jeder nicht genannte Schluessel still auf Werk. */
+    $fehlt = array();
+    foreach ($bekannt as $k) {
+        if (!isset($gesehen[$k])) { $fehlt[] = $k; }
+    }
+    if ($fehlt && $anzahl > 0) {
+        $mangel[] = sprintf(eb_t('EINST.SICH_FEHLT'),
+            htmlspecialchars(implode(', ', $fehlt), ENT_QUOTES, 'UTF-8'));
     }
     if ($anzahl === 0) {
         $mangel[] = eb_t('EINST.SICH_LEER');
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
+}
+
+/**
+ * Die Sicherungsdatei bauen - mit lesbarem Kopf.
+ *
+ * Der Kopf sagt dem Menschen, was er vor sich hat; die Leseseite
+ * uebergeht ihn. Ohne den Hinweis liegt eine Datei mit dem Aktionstoken
+ * im Download-Ordner, und niemand weiss es.
+ */
+function eb_sicherung_bauen($cfg)
+{
+    /* Keine Fassungsnummer im Kopf: die steht in diesem Haus an genau
+     * einer Stelle (plugin.cfg, release.cfg, prerelease.cfg, README), und
+     * fassung_setzen.py pflegt genau die. Eine Konstante hier waere eine
+     * zweite Quelle, die beim naechsten Sprung stehenbliebe. */
+    $kopf = array(
+        '_hinweis' => eb_klartext('EINST.SICH_KOPF'),
+        '_plugin'  => 'einspeisebremse',
+        '_stand'   => date('Y-m-d H:i:s'),
+    );
+    return json_encode($kopf + $cfg,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
 

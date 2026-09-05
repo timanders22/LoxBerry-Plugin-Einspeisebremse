@@ -4,9 +4,30 @@
 # WICHTIG: Zuerst die Anlage freigeben. Wer die Bremse entfernt, waehrend
 # die Wechselrichter auf einer gestellten Grenze stehen, laesst eine
 # gedrosselte Anlage zurueck, und niemand weiss mehr, warum.
+# Ordnername und Wurzel kommen aus den Argumenten des Installers, wie in
+# preupgrade.sh, postupgrade.sh und postinstall.sh. Bis 0.9.17 wurden
+# beide aus dem eigenen Ablageort gerechnet - genau das Verfahren, vor dem
+# cron/cron.01min ausdruecklich warnt. Stimmte die Rechnung nicht, tat
+# dieses Skript gar nichts und meldete trotzdem "OK": die Anlage blieb
+# gedrosselt zurueck, und niemand wusste warum.
 SELF=$(cd "$(dirname "$0")" && pwd)
-PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
-BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
+ARGV3=$3
+ARGV5=$5
+PFOLDER="${ARGV3:-einspeisebremse}"
+BASE="${ARGV5:-$LBHOMEDIR}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    BASE=$(cd "$SELF/../../.." 2>/dev/null && pwd)
+fi
+
+# Fail loud statt still: findet dieses Skript sein Plugin nicht, sagt es
+# das und meldet KEINEN Erfolg.
+if [ ! -d "$BASE/bin/plugins/$PFOLDER" ] && [ ! -d "$BASE/config/plugins/$PFOLDER" ]; then
+    echo "<FAIL> Einspeisebremse: der Plugin-Ordner wurde nicht gefunden."
+    echo "<INFO> Gesucht unter $BASE/bin/plugins/$PFOLDER"
+    echo "<INFO> Die Anlage wurde NICHT freigegeben. Bitte die Grenze am"
+    echo "<INFO> Wechselrichter selbst zuruecksetzen."
+    exit 1
+fi
 
 CF="$BASE/config/plugins/$PFOLDER/einspeisebremse.json"
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
@@ -30,7 +51,17 @@ fi
 
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 if [ -f "$PID" ]; then
-    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    # Argumentweise nachsehen, ob die Nummer wirklich unser Dienst ist -
+    # dieselbe Pruefung wie in dienst.sh. Eine PID-Datei ueberlebt jeden
+    # Absturz und jeden Neustart; nach einem Neustart ist die Nummer mit
+    # hoher Wahrscheinlichkeit neu vergeben, und ein blindes kill -9
+    # traefe einen beliebigen fremden Prozess. Das "|| true" darunter
+    # sorgte dafuer, dass es niemand merkte.
+    P=$(cat "$PID" 2>/dev/null)
+    if [ -n "$P" ] && [ -r "/proc/$P/cmdline" ] \
+       && tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | grep -q 'eb_dienst\.php$'; then
+        kill -9 "$P" 2>/dev/null || true
+    fi
     rm -f "$PID"
 fi
 

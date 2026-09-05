@@ -17,7 +17,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('EB_KERN', '1.3.0');
+define('EB_KERN', '1.4.0');
 
 /* Was das Stellwerk in einem Durchlauf tun kann. */
 define('EB_NICHTS',   0);
@@ -510,7 +510,7 @@ function eb_wirkung($vorher_w, $nachher_w, $ziel_w, $wartezeit_s, $vergangen_s, 
  * Die Adresse eines SunSpec-Stellglieds zerlegen. Rueckgabe: array|null.
  *
  * Form:     IP[:Port]/Geraeteadresse[/Basis[/Rueckfall_s]]
- * Beispiel: 192.168.178.31:502/1/40000/120
+ * Beispiel: 192.0.2.31:502/1/40000/120
  *
  * BASIS ist das Register, in dem die Marke "SunS" steht - beim Fronius
  * Datamanager 40000, am 19.08.2026 an einem Symo Hybrid gemessen. Sie
@@ -945,12 +945,12 @@ function eb_selbsttest($ausgabe = true)
     $pruef('70-Prozent: Rueckgang auf das Erlaubte genuegt', eb_wirkung(6000, 4200, 4200, 15, 20), 1);
 
     // ---- SunSpec: Adresse zerlegen ----
-    $a = eb_sunspec_zerlegen('192.168.178.31:502/1/40000/120');
-    $pruef('SunSpec Adresse vollstaendig: Host', $a['host'], '192.168.178.31');
+    $a = eb_sunspec_zerlegen('192.0.2.31:502/1/40000/120');
+    $pruef('SunSpec Adresse vollstaendig: Host', $a['host'], '192.0.2.31');
     $pruef('SunSpec Adresse vollstaendig: Port', $a['port'], 502);
     $pruef('SunSpec Adresse vollstaendig: Basis', $a['basis'], 40000);
     $pruef('SunSpec Adresse vollstaendig: Rueckfall', $a['rueckfall_s'], 120);
-    $a = eb_sunspec_zerlegen('192.168.178.31/1');
+    $a = eb_sunspec_zerlegen('192.0.2.31/1');
     $pruef('SunSpec ohne Port: 502', $a['port'], 502);
     $pruef('SunSpec ohne Basis: 40000', $a['basis'], 40000);
     $pruef('SunSpec ohne Rueckfall: 0', $a['rueckfall_s'], 0);
@@ -1034,6 +1034,32 @@ function eb_selbsttest($ausgabe = true)
     $pruef('nur die dritte eingetragen: sie allein', $s, 700);
     list($s, $a, $an) = eb_erzeugung_summe(array($g(100, 2.0), $g(200, 40.0), $g(300, 9.0)));
     $pruef('das Alter bleibt das groesste von dreien', $a, 40.0);
+
+    /* ---- Das Wirkungsfenster ----
+     * Der Anlass ist B7 vom 04.09.2026: bis 0.9.17 wurde das Fenster in
+     * JEDEM Takt neu gestartet, solange tat auf DROSSEL stand. vergangen_s
+     * blieb damit 0, und die erste Zeile hier zeigt, warum das die
+     * Pruefung stilllegte - sie gibt naemlich zu Recht 0 zurueck. Die
+     * uebrigen Zeilen belegen, dass sie mit einem stehenden Fenster
+     * urteilt. */
+    $pruef('unterhalb der Wartezeit gibt es kein Urteil',
+           eb_wirkung(3000.0, 3000.0, 0.0, 20.0, 0.0), 0);
+    $pruef('genau auf der Wartezeit wird geurteilt',
+           eb_wirkung(3000.0, 3000.0, 0.0, 20.0, 20.0), -1);
+    $pruef('Einspeisung unveraendert: keine Wirkung',
+           eb_wirkung(3000.0, 2990.0, 0.0, 20.0, 25.0), -1);
+    $pruef('Einspeisung deutlich gefallen: gewirkt',
+           eb_wirkung(3000.0, 1000.0, 0.0, 20.0, 25.0), 1);
+    $pruef('knapp unter der Schwelle: keine Wirkung',
+           eb_wirkung(3000.0, 2200.0, 0.0, 20.0, 25.0), -1);
+    $pruef('knapp darueber: gewirkt',
+           eb_wirkung(3000.0, 2000.0, 0.0, 20.0, 25.0), 1);
+    /* Die Mindestschwelle traegt auch, wenn das Ziel schon erreicht ist:
+     * 30 % von (3000 - 3000) waeren 0, dann gilt der Mindestwert. */
+    $pruef('bei erreichtem Ziel gilt die Mindestschwelle',
+           eb_wirkung(3000.0, 2950.0, 3000.0, 20.0, 25.0), -1);
+    $pruef('und sie wird auch bedient',
+           eb_wirkung(3000.0, 2890.0, 3000.0, 20.0, 25.0), 1);
 
     if ($ausgabe) {
         echo sprintf("\nEinspeisebremse-Kern %s: %d Faelle geprueft, %d Fehlschlaege.\n",

@@ -109,7 +109,13 @@ function eb_test_trocken()
         eb_klartext(isset($taten[$r['tat']]) ? $taten[$r['tat']] : 'TAT.NICHTS'));
     $o[] = sprintf('%-24s %s', eb_klartext('TEST.T_ANLASS'),
         eb_klartext('ANLASS.' . strtoupper($r['anlass'])));
-    $o[] = sprintf('%-24s %d W', eb_klartext('TEST.T_UEBER'), $r['ueberschuss_w']);
+    /* Ein unbekannter Ueberschuss ist nicht 0. eb_regeln() laesst den
+     * Wert ausdruecklich auf null, wenn kein Zaehlerwert vorliegt; %d
+     * machte daraus eine 0, und eine 0 liest sich wie "ausgeglichen" -
+     * genau die Verwechslung, gegen die der Kern gebaut ist. Die
+     * Schwesterstelle im "Was waere, wenn" macht es richtig. */
+    $o[] = sprintf('%-24s %s', eb_klartext('TEST.T_UEBER'),
+        $r['ueberschuss_w'] === null ? '-' : ((int) $r['ueberschuss_w']) . ' W');
     $o[] = sprintf('%-24s %d W', eb_klartext('TEST.T_GRENZE'), $r['drossel_w']);
     $o[] = sprintf('%-24s %d W', eb_klartext('TEST.T_LADESOLL'), $r['lade_soll_w']);
     if (!empty($r['erzeugung_ersatz'])) { $o[] = eb_klartext('TEST.T_ERSATZ'); }
@@ -238,6 +244,118 @@ function eb_test_endpunkt()
  *     es nicht". Unklarheit ist ein Kreuz.
  * ================================================================== */
 
+/**
+ * Ist der Reiter Test der serverseitig offene?
+ *
+ * Nur dann laufen die Zeilen, die ins Netz gehen oder etwas kosten. Der
+ * Wert wird von index.php gesetzt, bevor die Selbstpruefung gerendert
+ * wird; ohne Aufruf gilt "nein", damit ein fremder Einstieg (Prueflauf,
+ * Kommandozeile) nicht ungewollt Anfragen ausloest.
+ */
+function eb_test_offen($setzen = null)
+{
+    static $offen = false;
+    if ($setzen !== null) { $offen = (bool) $setzen; }
+    return $offen;
+}
+
+/**
+ * Tragen alle Formulare der Oberflaeche das Merkmal gegen fremde Absender?
+ *
+ * Gezaehlt wird ueber ALLE Dateien, aus denen die Oberflaeche besteht -
+ * index.php UND diese Datei. Eine Zaehlung nur ueber index.php meldete
+ * "12 von 12" bei siebzehn vorhandenen Formularen; die Zahl stimmte mit
+ * sich selbst ueberein und war trotzdem falsch, weil die Grundmenge zu
+ * klein war.
+ *
+ * Rueckgabe: array(Formulare, davon mit Merkmal)
+ */
+function eb_formulare_zaehlen()
+{
+    $ganz = 0;
+    $mit = 0;
+    foreach (array(__DIR__ . '/index.php', __FILE__) as $datei) {
+        if (!is_file($datei)) { continue; }
+        $t = (string) @file_get_contents($datei);
+        $teile = explode('<form', $t);
+        foreach ($teile as $i => $stueck) {
+            if ($i === 0) { continue; }
+            $ende = strpos($stueck, '</form>');
+            $block = $ende === false ? $stueck : substr($stueck, 0, $ende);
+            $ganz++;
+            if (strpos($block, 'eb_fmt()') !== false
+                || strpos($block, 'name="fmt"') !== false) { $mit++; }
+        }
+    }
+    return array($ganz, $mit);
+}
+
+/**
+ * Setzt der Server das sm-active selbst, oder braucht die Seite dafuer
+ * JavaScript?
+ *
+ * Faellt das Skript aus und steht die Klasse nur per Skript, ist die
+ * Seite vollstaendig leer - .sm-seite steht auf display:none. Genau das
+ * ist einer Schwesterlinie sechs Tage lang nicht aufgefallen, weil im
+ * Quelltext der Satz stand, sie sei weiterhin bedienbar.
+ *
+ * Erwartet wird je Reiter zweimal der serverseitige Ausdruck: einmal an
+ * der Leiste, einmal am Bereich.
+ * Rueckgabe: array(gefunden, erwartet)
+ */
+function eb_active_serverseitig()
+{
+    $datei = __DIR__ . '/index.php';
+    $t = is_file($datei) ? (string) @file_get_contents($datei) : '';
+    if ($t === '') { return array(0, 0); }
+    list($nl, $nb, $nli, $gleich) = eb_reiter_zaehlen();
+    return array(substr_count($t, "' sm-active' : ''"), $nl + $nb);
+}
+
+/**
+ * Ist jeder Feldname der Antwortzeile eindeutig?
+ *
+ * Loxone sucht woertlich und nimmt die ERSTE Fundstelle. Endet ein
+ * Feldname auf einen anderen, liest der virtuelle Eingang still den
+ * falschen Wert. Gemessen wird an der ERZEUGTEN Antwortzeile, nicht am
+ * Quelltext, und der Suchtext kommt aus eb_check() - derselben Funktion,
+ * aus der ihn auch die Importvorlage nimmt.
+ *
+ * Rueckgabe: array(Zahl der Felder, Liste der Kollisionen)
+ */
+function eb_suchtexte_eindeutig()
+{
+    $zeile = eb_zeile(eb_stand());
+    if (!preg_match_all('/;([A-Z0-9_]+)=/', $zeile, $tr)) {
+        return array(0, array());
+    }
+    $felder = array_values(array_unique($tr[1]));
+    $stoss = array();
+    foreach ($felder as $a) {
+        /* Der Suchtext, den die Vorlage wirklich traegt. Trifft er in
+         * dieser Antwortzeile mehr als einmal, ist er nicht eindeutig -
+         * das ist die Frage, und sie wird am Ergebnis gestellt, nicht an
+         * einer Namensliste. */
+        $muster = str_replace(array('\i', '\v'), '', eb_check($a));
+        if (substr_count($zeile, $muster) !== 1) {
+            $stoss[] = $a;
+            continue;
+        }
+        foreach ($felder as $b) {
+            if ($a === $b || strlen($b) <= strlen($a)) { continue; }
+            /* Gegenprobe ohne Trennzeichen: WAERE der Suchtext ohne das
+             * Semikolon gebaut, traefe er hier zuerst den laengeren
+             * Namen. Die Zeile bleibt gruen - sie belegt, dass das
+             * Trennzeichen den Unterschied macht. */
+            if (substr($b, -strlen($a)) === $a
+                && strpos($zeile, ';' . $a . '=') === false) {
+                $stoss[] = $a . ' in ' . $b;
+            }
+        }
+    }
+    return array(count($felder), array_values(array_unique($stoss)));
+}
+
 /** Eine Zeile der Selbstpruefung. $ok: 1 Haekchen, 0 Kreuz, -1 Hinweis. */
 function eb_pruefzeile($frage, $ok, $bemerkung = '')
 {
@@ -256,9 +374,25 @@ function eb_dienst_skript()
 }
 
 /** Ruft den eigenen Endpunkt mit ?selftest=1 auf. Rueckgabe: array(code, text). */
+/**
+ * Die Adresse fuer den EIGENEN Abruf.
+ *
+ * eb_endpunkt() baut aus dem Host-Kopf der Anfrage - richtig fuer eine
+ * Adresse, die ein Mensch abschreibt oder die in die Loxone-Vorlage
+ * wandert, falsch fuer einen Abruf, den der Server selbst macht: der
+ * Host-Kopf kommt von aussen, und das Aktionstoken steht in der Adresse.
+ * Fuer den eigenen Abruf ist die Rueckschleife richtig, denn der Endpunkt
+ * liegt auf demselben Geraet.
+ */
+function eb_endpunkt_selbst()
+{
+    $p = eb_paths();
+    return 'http://127.0.0.1/plugins/' . $p['plugin'] . '/index.php';
+}
+
 function eb_endpunkt_selftest($token)
 {
-    $url = eb_endpunkt() . '?selftest=1&token=' . rawurlencode($token);
+    $url = eb_endpunkt_selbst() . '?selftest=1&token=' . rawurlencode($token);
     /* Drei Sekunden, nicht acht: diese Zeile steht in einer Seite, die bei
      * jedem Aufruf des Reiters neu aufgebaut wird. Auf dem Geraet antwortet
      * der eigene Webserver in Millisekunden; die Zeitueberschreitung greift
@@ -393,23 +527,39 @@ function eb_selbstpruefung()
         sprintf(eb_klartext($zweifel ? 'SP.ADRESSE_ZWEIFELHAFT' : 'SP.ADRESSE_GUT'),
                 $wo !== '' ? $wo : '-'));
 
-    /* ---- Der Endpunkt, den der Miniserver aufruft ---- */
+    /* ---- Der Endpunkt, den der Miniserver aufruft ----
+     *
+     * Nur wenn der Reiter Test serverseitig der offene ist. Alle Reiter
+     * werden mitgerendert; bis 0.9.17 lief dieser Netzaufruf deshalb bei
+     * JEDEM Seitenaufruf, auch beim Blick in die Einstellungen. Am
+     * 04.09.2026 gemessen: gegen eine Adresse, die nicht antwortet,
+     * kostete das auf allen fuenf Reitern denselben Aufschlag. */
+    if (!eb_test_offen()) {
+        $z[] = eb_pruefzeile(eb_klartext('SP.EP_ERREICHBAR'), -1,
+                             eb_klartext('SP.EP_NUR_IM_REITER'));
+        $code = null;
+    } else {
     $token = eb_token();
     list($code, $text) = eb_endpunkt_selftest($token);
+    /* Drei Ausgaenge, nicht zwei: "ich konnte es nicht messen" darf
+     * nicht wie "es ist kaputt" aussehen. Ein Webserver, der nur eine
+     * Anfrage zugleich bearbeitet, kann sich waehrend des Seitenaufbaus
+     * nicht selbst aufrufen - im Pruefaufbau faellt genau das an. */
     $z[] = eb_pruefzeile(eb_klartext('SP.EP_ERREICHBAR'),
-        ($code === 200 && strpos($text, 'OK=1') !== false) ? 1 : 0,
+        $code === 0 ? -1 : (($code === 200 && strpos($text, 'OK=1') !== false) ? 1 : 0),
         $code ? sprintf(eb_klartext('SP.EP_ANTWORT'), $code, substr($text, 0, 40))
               : eb_klartext('SP.EP_KEINE_ANTWORT'));
     /* Die Gegenprobe nur, wenn ueberhaupt jemand geantwortet hat. Zweimal
      * ins Leere zu laufen kostet nur Wartezeit und sagt nichts Neues. */
     if ($code === 0) {
-        $z[] = eb_pruefzeile(eb_klartext('SP.EP_ABWEISUNG'), 0,
+        $z[] = eb_pruefzeile(eb_klartext('SP.EP_ABWEISUNG'), -1,
                              eb_klartext('SP.EP_KEINE_ANTWORT'));
     } else {
         list($code2, $text2) = eb_endpunkt_selftest('falsch');
         $z[] = eb_pruefzeile(eb_klartext('SP.EP_ABWEISUNG'),
             ($code2 === 403 && strpos($text2, 'ERR=TOKEN') !== false) ? 1 : 0,
             sprintf(eb_klartext('SP.EP_ANTWORT'), $code2, substr($text2, 0, 40)));
+    }
     }
 
     /* ---- Die Vorlage fuer Loxone ---- */
@@ -429,7 +579,12 @@ function eb_selbstpruefung()
 
     /* ---- MQTT, aber nur wenn es gebraucht wird ---- */
     $braucht_mqtt = !empty($cfg['mqtt_ein']);
-    foreach (array('q_netz', 'q_erzeugung', 'q_soc', 'q_lade') as $k) {
+    /* Aus der EINEN Liste. Vier Namen standen hier fest verdrahtet,
+     * eb_quellenfelder() fuehrt sieben: der Ersatzzaehler und der
+     * zweite und dritte Wechselrichter fehlten. Lief einer davon ueber
+     * MQTT und war der MQTT-Haken aus, fielen die beiden Zeilen unten
+     * aus der Pruefung, und die Zusammenfassung meldete gruen. */
+    foreach (array_keys(eb_quellenfelder()) as $k) {
         if ($cfg[$k]['art'] === 'mqtt') { $braucht_mqtt = true; }
     }
     foreach ($steller as $s) { if ($s['art'] === 'mqtt') { $braucht_mqtt = true; } }
@@ -453,6 +608,42 @@ function eb_selbstpruefung()
 
     $z[] = eb_pruefzeile(eb_klartext('SP.SPRACHE'), eb_sprache_fehlt() ? 0 : 1,
         eb_sprache_fehlt() ? eb_klartext('SP.SPRACHE_FEHLT') : eb_sprache());
+
+    /* ---- Ist die Konfiguration heil? ----
+     * Der zuerst festgestellte Zustand, nicht der nach der Selbstheilung:
+     * ein geheilter Schaden ist kein Nicht-Schaden. Die Zweitschrift kann
+     * aelter sein als das, was verlorenging, und die Ursache besteht fort. */
+    $eb_lagen = array(
+        'ok'                       => 'SP.KONFIG_OK',
+        'leer'                     => 'SP.KONFIG_LEER',
+        'aus der Zweitschrift'     => 'SP.KONFIG_ZWEITSCHRIFT',
+        'kaputt'                   => 'SP.KONFIG_KAPUTT',
+        'kaputt ohne Zweitschrift' => 'SP.KONFIG_KAPUTT_OHNE',
+        'unlesbarer Wert'          => 'SP.KONFIG_WERT',
+    );
+    $lage = eb_config_lage();
+    $z[] = eb_pruefzeile(eb_klartext('SP.KONFIG'), $lage === 'ok' ? 1 : 0,
+        eb_klartext(isset($eb_lagen[$lage]) ? $eb_lagen[$lage] : 'SP.KONFIG_UNBEKANNT'));
+
+    /* ---- Tragen alle Formulare das Merkmal? ---- */
+    list($fg, $fm) = eb_formulare_zaehlen();
+    $z[] = eb_pruefzeile(eb_klartext('SP.FORMULARE'),
+        ($fg > 0 && $fg === $fm) ? 1 : 0,
+        sprintf(eb_klartext('SP.FORMULARE_ZAHL'), $fm, $fg));
+
+    /* ---- Setzt der Server das sm-active? ---- */
+    list($ag, $ae) = eb_active_serverseitig();
+    $z[] = eb_pruefzeile(eb_klartext('SP.ACTIVE'),
+        ($ae > 0 && $ag >= $ae) ? 1 : 0,
+        sprintf(eb_klartext('SP.ACTIVE_ZAHL'), $ag, $ae));
+
+    /* ---- Ist jeder Suchtext eindeutig? ---- */
+    list($sz, $stoss) = eb_suchtexte_eindeutig();
+    $z[] = eb_pruefzeile(eb_klartext('SP.SUCHTEXT'),
+        $sz === 0 ? -1 : ($stoss ? 0 : 1),
+        $sz === 0 ? eb_klartext('SP.SUCHTEXT_LEER')
+                  : ($stoss ? implode(', ', $stoss)
+                            : sprintf(eb_klartext('SP.SUCHTEXT_ZAHL'), $sz)));
 
     /* ---- Zuletzt der Rechenkern ---- */
     list($n, $f) = eb_selbsttest(false);

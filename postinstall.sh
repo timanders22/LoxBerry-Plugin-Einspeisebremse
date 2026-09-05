@@ -55,7 +55,7 @@ echo "<INFO> PHP: $(php -v 2>/dev/null | head -1)"
 # sie hier fehlen, ist an der Installation etwas schiefgegangen, und das
 # soll man erfahren, bevor man sich wundert, warum nichts geregelt wird.
 FEHLT=""
-command -v mosquitto_sub >/dev/null 2>&1 || FEHLT="mosquitto_sub"
+command -v mosquitto_sub >/dev/null 2>&1 || FEHLT="$FEHLT mosquitto_sub"
 command -v mosquitto_pub >/dev/null 2>&1 || FEHLT="$FEHLT mosquitto_pub"
 if [ -n "$FEHLT" ]; then
     echo "<INFO> Es fehlt:$FEHLT"
@@ -91,6 +91,47 @@ if [ -n "$FREMD" ]; then
     echo "<INFO> Der Dienst laeuft als $WER und koennte sie nicht schreiben."
 fi
 
+# ---------- Langzeitwerte zurueckholen ----------
+# Gegenstueck zu preupgrade.sh. Zwischen beiden Skripten hat der Installer
+# data/plugins/<x>/ vollstaendig geloescht; der Nachbar mit dem Punkt hat es
+# ueberstanden. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
+# findet nichts vor und faengt sauber bei null an.
+#
+# DIESER BLOCK STEHT VOR DEM DIENSTSTART. Bis 0.9.17 stand er dahinter,
+# und das machte ihn wirkungslos: am 04.09.2026 gemessen, legt der Dienst
+# verlauf.json und bilanz.json 0,41 s nach seinem Start selbst an. Der
+# Block fand dann eine nicht leere Datei vor, uebersprang die Rettung -
+# und loeschte die Sicherung trotzdem. Wer die Reihenfolge wieder dreht,
+# nimmt jedem Anwender bei jedem Update Verlauf und Monatsbilanz.
+LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+if [ -d "$LANG_SICHER" ]; then
+    for LANG_F in verlauf.json bilanz.json; do
+        [ -f "$LANG_SICHER/$LANG_F" ] || continue
+        ZIEL="$BASE/data/plugins/$PFOLDER/$LANG_F"
+        # Gegen den INHALT pruefen, nicht nur gegen "nicht leer": eine
+        # frisch angelegte Datei mit leerer Punktliste ist 23 Byte gross
+        # und haette die Rettung sonst verhindert. Dieselbe Sorgfalt wie
+        # oben bei der Konfiguration.
+        DA=""
+        if [ -s "$ZIEL" ]; then
+            INH=$(tr -d ' \n\r\t' < "$ZIEL" 2>/dev/null)
+            case "$INH" in
+                ''|'{}'|'[]'|'{"punkte":[]}') DA="" ;;
+                *) DA="ja" ;;
+            esac
+        fi
+        if [ -z "$DA" ]; then
+            mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null
+            if cp -p "$LANG_SICHER/$LANG_F" "$ZIEL" 2>/dev/null; then
+                echo "<OK> $LANG_F ueber das Update gerettet."
+            else
+                echo "<INFO> $LANG_F liess sich nicht zurueckholen."
+            fi
+        fi
+    done
+    rm -rf "$LANG_SICHER" 2>/dev/null
+fi
+
 # ---------- Dienst starten ----------
 # Der Dienst misst und zeigt an. GESTELLT wird erst, wenn der Mensch die
 # Regelung in der Oberflaeche einschaltet - eine frisch installierte Bremse
@@ -114,22 +155,4 @@ echo "<INFO>  2. Stellglieder eintragen, mit Platzhalter {W}, {KW} oder {PROZENT
 echo "<INFO>  3. Reiter Test: 'Messwerte lesen' und 'Trockenlauf' - dort steht,"
 echo "<INFO>     was die Regelung taete und welche Befehle hinausgingen."
 echo "<INFO>  4. Erst wenn das stimmt: Regelung einschalten."
-
-# ---------- Langzeitwerte zurueckholen ----------
-# Gegenstueck zu preupgrade.sh. Zwischen beiden Skripten hat der Installer
-# data/plugins/<x>/ vollstaendig geloescht; der Nachbar mit dem Punkt hat es
-# ueberstanden. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
-# findet nichts vor und faengt sauber bei null an.
-LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
-if [ -d "$LANG_SICHER" ]; then
-    for LANG_F in verlauf.json; do
-        if [ -f "$LANG_SICHER/$LANG_F" ] \
-           && [ ! -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
-            mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null
-            cp -p "$LANG_SICHER/$LANG_F" "$BASE/data/plugins/$PFOLDER/$LANG_F" \
-                2>/dev/null && echo "<OK> $LANG_F ueber das Update gerettet."
-        fi
-    done
-    rm -rf "$LANG_SICHER" 2>/dev/null
-fi
 exit 0

@@ -274,12 +274,27 @@ if ($eb_post && isset($_POST['speichern'])) {
             $q['pfad'] = $eb_wert($eb_k . '_pfad');
             $q['invertieren'] = !empty($_POST[$eb_k . '_inv']) ? 1 : 0;
             $f = str_replace(',', '.', $eb_wert($eb_k . '_faktor', '1'));
-            if ($f === '' || !is_numeric($f)) {
-                if ($f !== '') { $eb_fehler[] = sprintf(eb_t('FEHLER.KEINE_ZAHL'),
-                    eb_t($eb_bez) . ' / ' . eb_t('QUELLE.L_FAKTOR'), $f); }
-                $f = '1';
+            if ($f === '') {
+                /* Leer heisst "alten Wert behalten", nicht "1". Bis 0.9.17
+                 * war die Meldung fuer genau diesen Fall ausdruecklich
+                 * ausgeschlossen ($f !== ''), und aus einem geleerten Feld
+                 * wurde still der Faktor 1 - bei einem Zaehler in kW ein
+                 * Messfehler um drei Groessenordnungen, gemeldet als
+                 * "gespeichert". */
+                $alt_f = isset($eb_cfg[$eb_k]['faktor'])
+                    ? (float) $eb_cfg[$eb_k]['faktor'] : 1.0;
+                $q['faktor'] = ($alt_f == 0.0) ? 1.0 : $alt_f;
+                $eb_meldungen[] = sprintf(eb_t('EINST.FELD_LEER_BEHALTEN'),
+                    eb_t($eb_bez) . ' / ' . eb_t('QUELLE.L_FAKTOR'),
+                    rtrim(rtrim(sprintf('%.6F', $q['faktor']), '0'), '.'));
+            } elseif (!is_numeric($f)) {
+                $eb_fehler[] = sprintf(eb_t('FEHLER.KEINE_ZAHL'),
+                    eb_t($eb_bez) . ' / ' . eb_t('QUELLE.L_FAKTOR'), $f);
+                $q['faktor'] = isset($eb_cfg[$eb_k]['faktor'])
+                    ? (float) $eb_cfg[$eb_k]['faktor'] : 1.0;
+            } else {
+                $q['faktor'] = (float) $f;
             }
-            $q['faktor'] = (float) $f;
             if (!isset($eb_qarten[$q['art']])) { $q['art'] = 'aus'; }
             if ($q['art'] !== 'aus' && $q['adresse'] === '') {
                 $eb_fehler[] = sprintf(eb_t('FEHLER.QUELLE_OHNE_ADRESSE'), eb_t($eb_bez));
@@ -379,13 +394,23 @@ if ($eb_post && isset($_POST['speichern'])) {
     if ($eb_formular === 'mqtt') {
         $eb_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
 
-        $eb_thema = strtolower($eb_wert('mqtt_topic'));
-        $eb_thema = trim($eb_thema, '/');
+        /* Weder leeren noch stillschweigend kleinschreiben. An einem
+         * Themenpraefix haengen die virtuellen Eingaenge im Miniserver und
+         * die zurueckbehaltenen Werte im Broker; wer es unbemerkt aendert,
+         * laesst ein eingetragenes Abo ins Leere zeigen. */
+        $eb_thema = trim($eb_wert('mqtt_topic'), '/');
         if ($eb_thema === '') {
-            $eb_cfg['mqtt_topic'] = 'einspeisebremse';
-        } elseif (!preg_match('#^[a-z0-9_\-/]+$#', $eb_thema)) {
+            $eb_meldungen[] = sprintf(eb_t('EINST.FELD_LEER_BEHALTEN'),
+                eb_t('MQTT.THEMA'), $eb_cfg['mqtt_topic']);
+        } elseif (!preg_match('#^[a-zA-Z0-9_\-/]+$#', $eb_thema)) {
             // Ein Thema mit + oder # ist ein Filtermuster und als Ziel unbrauchbar.
             $eb_fehler[] = sprintf(eb_t('FEHLER.THEMA'), $eb_thema);
+        } elseif ($eb_thema !== strtolower($eb_thema)) {
+            /* Grossbuchstaben sind in einem MQTT-Thema zulaessig - aber
+             * ein still kleingeschriebenes Thema ist ein anderes Thema.
+             * Also melden und den Anwender entscheiden lassen. */
+            $eb_fehler[] = sprintf(eb_t('FEHLER.THEMA_GROSS'), $eb_thema,
+                                   strtolower($eb_thema));
         } else {
             $eb_cfg['mqtt_topic'] = $eb_thema;
         }
@@ -447,8 +472,7 @@ $eb_rahmen = class_exists('LBWeb', false);
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($eb_post && isset($_POST['eb_sichern'])) {
-    $eb_js = json_encode(eb_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $eb_js = eb_sicherung_bauen(eb_config());
     if ($eb_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="einspeisebremse_einstellungen_'
@@ -472,15 +496,30 @@ if ($eb_post && isset($_POST['eb_zurueck'])) {
     } elseif ((int) $_FILES['eb_sicherung']['size'] > 262144) {
         $eb_fehler[] = eb_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($eb_neu, $eb_mangel, $eb_n) = eb_sicherung_lesen(
+        /* EIGENE Variable. Bis 0.9.17 stand hier $eb_mangel - dieselbe,
+         * aus der weiter unten der Maengelkasten gebaut wird. Nach einem
+         * erfolgreichen Zurueckspielen war der Kasten deshalb leer,
+         * obwohl die eingespielte Konfiguration Maengel haben kann, und
+         * nach einem abgelehnten standen die Ablehnungsgruende ein
+         * zweites Mal darin - als waeren es Einschalthindernisse.
+         * Dazu kommt: eb_maengel() liefert SCHLUESSEL, diese Funktion
+         * fertige Texte. */
+        list($eb_neu, $eb_sich_mangel, $eb_n) = eb_sicherung_lesen(
             (string) @file_get_contents($_FILES['eb_sicherung']['tmp_name']));
         if ($eb_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
             $eb_fehler[] = eb_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $eb_mangel);
+                            . implode(' ', $eb_sich_mangel);
         } elseif (eb_config_speichern($eb_neu)) {
             $eb_meldungen[] = sprintf(eb_t('EINST.SICH_UEBERNOMMEN'), $eb_n);
+            /* Die Anzeige neu holen. $eb_cfg wurde weiter oben aus der
+             * Datei gefuellt; ohne dieses Nachlesen zeigte die Seite nach
+             * dem Zurueckspielen weiter den ALTEN Stand in jedem Feld -
+             * und ein anschliessendes Speichern schrieb ihn zurueck. */
+            $eb_cfg = eb_config();
+            $eb_stand = eb_stand();
+            $eb_mangel = eb_maengel($eb_cfg);
         } else {
             $eb_fehler[] = eb_t('EINST.SICH_SCHREIBFEHLER');
         }
@@ -517,6 +556,12 @@ if ($eb_rahmen) {
 .sm-step { border: 1px solid #ddd; border-left: 4px solid #6dac20; background: #fafafa;
     border-radius: 6px; padding: 12px 14px; margin: 12px 0; font-size: 0.92em; line-height: 1.5; }
 .sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
+/* Rollbehaelter fuer breite Tabellen. Ohne ihn liegt bei sechs Spalten
+   mit Eingabefeldern die letzte Spalte ausserhalb von .sm-wrap und ist
+   unerreichbar - bei den Quellen der Haken "invertieren", bei den
+   Stellgliedern der Haken "stilllegen". Aus VORLAGE_hausstandard.css.html. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
 .sm-tbl th { background: #eef3e6; font-weight: 600; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
@@ -704,11 +749,14 @@ if ($eb_rahmen) {
 <form action="index.php" method="post">
   <?php echo eb_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<div class="sm-breit">
 <table class="sm-tbl"><tr>
   <td><label for="eb_vq"><?= eb_e(eb_t('VORLAGE.H')) ?><br>
     <select data-role="none" id="eb_vq" name="vorlage_quellen">
 <?php foreach (eb_quellvorlagen() as $eb_vk => $eb_vv) { ?>
-      <option value="<?= eb_e($eb_vk) ?>"><?= eb_e(eb_t($eb_vv['bez'])) ?></option>
+      <option value="<?= eb_e($eb_vk) ?>"
+              data-feld="<?= eb_e(eb_t($eb_vv['feld'])) ?>"
+              data-vorgabe="<?= eb_e((string) $eb_vv['vorgabe']) ?>"><?= eb_e(eb_t($eb_vv['bez'])) ?></option>
 <?php } ?>
     </select></label></td>
   <td><label for="eb_vqz"><?= eb_e(eb_t('VORLAGE.ZIEL')) ?><br>
@@ -716,19 +764,53 @@ if ($eb_rahmen) {
       <option value="vorlage"><?= eb_e(eb_t('VORLAGE.Z_VORLAGE')) ?></option>
       <option value="ersatz"><?= eb_e(eb_t('VORLAGE.Z_ERSATZ')) ?></option>
     </select></label></td>
-  <td><label for="eb_vqw"><?= eb_e(eb_t('VORLAGE.F_IP')) ?> / <?= eb_e(eb_t('VORLAGE.F_PRAEFIX')) ?><br>
+  <td><label for="eb_vqw"><span id="eb_vqw_bez"><?php
+    /* Die Beschriftung kommt aus der GEWAEHLTEN Vorlage, nicht aus einer
+     * fest verdrahteten Zeile. Bis 0.9.17 stand hier immer
+     * "IP-Adresse ... / Themen-Praefix ...", auch bei der Vorlage fuer den
+     * zweiten Wechselrichter, die "Host:Port/Geraeteadresse" verlangt -
+     * wer der Beschriftung folgte, baute eine Adresse, die das Muster
+     * nicht traf, und bekam MANGEL.MODBUS_FORM.
+     *
+     * Ohne JavaScript steht die erste Vorlage da, und die Liste darunter
+     * nennt zu JEDER Vorlage ihr Feld und ein Beispiel - die Seite bleibt
+     * also vollstaendig bedienbar. */
+    $eb_vq_erste = current(eb_quellvorlagen());
+    echo eb_e(eb_t($eb_vq_erste['feld']));
+  ?></span><br>
     <input data-role="none" type="text" size="28" id="eb_vqw" name="vq_wert"
+           placeholder="<?= eb_e((string) $eb_vq_erste['vorgabe']) ?>"
            value="<?= eb_e(isset($_POST['vq_wert']) ? $_POST['vq_wert'] : '') ?>"></label></td>
 </tr></table>
+</div>
 <!-- Der Knopf in eine eigene Reihe: als vierte Spalte fiel er auf
      schmaleren Bildschirmen hinten heraus und war abgeschnitten. -->
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= eb_e(eb_t('VORLAGE.K_ANWENDEN')) ?></button>
 </div>
 </form>
+<script>
+/* Zugabe, keine Voraussetzung: ohne dieses Skript steht die Beschriftung
+   der ersten Vorlage da, und die Liste darunter nennt zu jeder Vorlage
+   ihr Feld samt Beispiel. */
+(function () {
+  var w = document.getElementById('eb_vq'),
+      b = document.getElementById('eb_vqw_bez'),
+      f = document.getElementById('eb_vqw');
+  if (!w || !b || !f) { return; }
+  w.addEventListener('change', function () {
+    var o = w.options[w.selectedIndex];
+    if (!o) { return; }
+    b.textContent = o.getAttribute('data-feld') || b.textContent;
+    f.setAttribute('placeholder', o.getAttribute('data-vorgabe') || '');
+  });
+})();
+</script>
 <ul class="sm-hilfe">
 <?php foreach (eb_quellvorlagen() as $eb_vk => $eb_vv) { ?>
-  <li><b><?= eb_e(eb_t($eb_vv['bez'])) ?>:</b> <?= eb_t($eb_vv['hinweis']) ?></li>
+  <li><b><?= eb_e(eb_t($eb_vv['bez'])) ?>:</b> <?= eb_t($eb_vv['hinweis']) ?>
+      <br><span class="sm-mono"><?= eb_e(eb_t($eb_vv['feld'])) ?>:</span>
+      <span class="sm-mono"><?= eb_e((string) $eb_vv['vorgabe']) ?></span></li>
 <?php } ?>
 </ul>
 
@@ -739,6 +821,7 @@ if ($eb_rahmen) {
 
 <h2><?= eb_e(eb_t('EINST.H_QUELLEN')) ?></h2>
 <div class="sm-step"><?= eb_t('EINST.QUELLEN_ERKLAERUNG') ?></div>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?= eb_e(eb_t('QUELLE.SP_GROESSE')) ?></th><th><?= eb_e(eb_t('QUELLE.L_ART')) ?></th>
     <th><?= eb_e(eb_t('QUELLE.L_ADRESSE')) ?></th><th><?= eb_e(eb_t('QUELLE.L_PFAD')) ?></th>
@@ -760,12 +843,14 @@ if ($eb_rahmen) {
 </tr>
 <?php } ?>
 </table>
+</div>
 <p class="sm-hilfe"><?= eb_t('QUELLE.HILFE') ?></p>
 
 <h2><?= eb_e(eb_t('EINST.H_STELLER')) ?></h2>
 <div class="sm-step"><?= eb_t('EINST.STELLER_ERKLAERUNG') ?></div>
 <?php for ($eb_i = 0; $eb_i < EB_STELLER; $eb_i++) { $s = $eb_cfg['steller'][$eb_i]; ?>
 <h3><?= eb_e(eb_t('STELL.STELLER')) ?> <?= $eb_i + 1 ?><?= $s['name'] !== '' ? ': ' . eb_e($s['name']) : '' ?></h3>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr>
   <td><label><?= eb_e(eb_t('STELL.L_NAME')) ?><br>
@@ -796,6 +881,7 @@ if ($eb_rahmen) {
     <input data-role="none" type="text" size="34" name="s_inhalt[<?= $eb_i ?>]" value="<?= eb_e($s['inhalt']) ?>"></label></td>
 </tr>
 </table>
+</div>
 <?php } ?>
 <p class="sm-hilfe"><?= eb_t('STELL.HILFE') ?></p>
 <p class="sm-hilfe"><?= eb_t('STELL.SUNSPEC_HILFE') ?></p>
@@ -804,6 +890,7 @@ if ($eb_rahmen) {
 <h2><?= eb_e(eb_t('EINST.H_SPEICHER_STELLER')) ?></h2>
 <div class="sm-step"><?= eb_t('EINST.SPEICHER_STELLER_ERKLAERUNG') ?></div>
 <?php $eb_sp = $eb_cfg['sp_steller']; ?>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr>
   <td><label><?= eb_e(eb_t('STELL.L_NAME')) ?><br>
@@ -832,9 +919,11 @@ if ($eb_rahmen) {
     <input data-role="none" type="text" size="34" name="sp_inhalt" value="<?= eb_e($eb_sp['inhalt']) ?>"></label></td>
 </tr>
 </table>
+</div>
 
 <h2><?= eb_e(eb_t('EINST.H_REGELUNG')) ?></h2>
 <div class="sm-step"><?= eb_t('EINST.REGELUNG_ERKLAERUNG') ?></div>
+<div class="sm-breit">
 <table class="sm-tbl">
 <?php
 $eb_gruppen = array(
@@ -852,6 +941,7 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 </tr>
 <?php } ?>
 </table>
+</div>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="speicher_zuerst" value="1"<?= !empty($eb_cfg['speicher_zuerst']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_SPEICHER_ZUERST')) ?></label>
   <p class="sm-hilfe"><?= eb_t('EINST.H_SPEICHER_ZUERST') ?></p>
@@ -860,6 +950,7 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
   <label><input data-role="none" type="checkbox" name="bilanz_ein" value="1"<?= !empty($eb_cfg['bilanz_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_BILANZ_EIN')) ?></label>
   <label><input data-role="none" type="checkbox" name="verlauf_ein" value="1"<?= !empty($eb_cfg['verlauf_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_VERLAUF_EIN')) ?></label>
 </div>
+<h3><?= eb_e(eb_t('EINST.H_STUFEN')) ?></h3>
 <div class="sm-step"><?= sprintf(eb_t('EINST.STUFEN_ERKLAERUNG'),
         (int) $eb_cfg['stufe'], (int) eb_ziel_w($eb_cfg)) ?></div>
 <p class="sm-hilfe"><?= eb_t('EINST.REGELGROESSEN_HILFE') ?></p>
@@ -1083,7 +1174,14 @@ $eb_gwf = (int) $eb_mqtt['fassung'];
 
 <h2><?= eb_e(eb_t('TEST.H_SELBST')) ?></h2>
 <div class="sm-step"><?= eb_t('TEST.SELBST_ERKLAERUNG') ?></div>
-<?= eb_selbstpruefung_html() ?>
+<?php
+/* Erst hier wird der Schalter gesetzt: die Selbstpruefung darf ins
+ * Netz gehen, weil der Reiter Test der serverseitig offene ist. Auf
+ * jedem anderen Reiter bleibt der Aufruf aus - bis 0.9.17 lief er bei
+ * JEDEM Seitenaufruf mit. */
+eb_test_offen($eb_tab === 'tab-test');
+echo eb_selbstpruefung_html();
+?>
 
 <h2><?= eb_e(eb_t('TEST.H_BILANZ')) ?></h2>
 <div class="sm-step"><?= eb_t('TEST.BILANZ_ERKLAERUNG') ?></div>
@@ -1104,6 +1202,7 @@ $eb_gwf = (int) $eb_mqtt['fassung'];
 <form action="index.php" method="post">
   <?php echo eb_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
+<div class="sm-breit">
 <table class="sm-tbl"><tr>
   <td><label><?= eb_e(eb_t('TEST.W_NETZ')) ?><br>
     <input data-role="none" type="text" size="8" name="w_netz" value="<?= eb_e(isset($_POST['w_netz']) ? $_POST['w_netz'] : '-3000') ?>"></label></td>
@@ -1114,6 +1213,7 @@ $eb_gwf = (int) $eb_mqtt['fassung'];
   <td><label><?= eb_e(eb_t('TEST.W_LADE')) ?><br>
     <input data-role="none" type="text" size="8" name="w_lade" value="<?= eb_e(isset($_POST['w_lade']) ? $_POST['w_lade'] : '') ?>"></label></td>
 </tr></table>
+</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="wenn"><?= eb_e(eb_t('TEST.K_WENN')) ?></button>
 </div>

@@ -27,7 +27,12 @@ require_once __DIR__ . '/eb_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-store');
 
-$eb_cfg = eb_config();
+/* Nur LESEN. Der Aufrufer hat sich noch nicht ausgewiesen; was hier
+ * entstuende, legte ein Fremder an. Gemessen am 04.09.2026: bis 0.9.17
+ * erzeugte ein Aufruf mit FALSCHEM Wortzeichen den Konfigordner und
+ * holte die Konfiguration aus der Zweitschrift zurueck - eine gerade
+ * von Hand geleerte Datei kam hinter dem Ruecken des Bedieners wieder. */
+$eb_cfg = eb_config(false);
 $eb_soll = (string) $eb_cfg['aktionstoken'];
 $eb_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
 
@@ -69,7 +74,7 @@ if (!hash_equals($eb_soll, $eb_ist)) {
 }
 
 $eb_aktion = isset($_GET['aktion']) ? strtolower((string) $_GET['aktion']) : 'status';
-if (!in_array($eb_aktion, array('status', 'json', 'ein', 'stufe', 'selftest'), true)) {
+if (!in_array($eb_aktion, array('status', 'json', 'ein', 'stufe'), true)) {
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=AKTION_UNBEKANNT\n";
     echo "Erlaubt sind: status, json, ein, stufe\n";
@@ -101,8 +106,11 @@ if ($eb_aktion === 'ein') {
         }
     }
     if ((int) $eb_cfg['ein'] !== $neu) {
-        $eb_cfg['ein'] = $neu;
-        if (!eb_config_speichern($eb_cfg)) {
+        /* EIN Feld, unter Sperre. Frueher schrieb der Endpunkt den ganzen
+         * Stand zurueck, den er vor der Aenderung gelesen hatte - wer
+         * gleichzeitig in der Oberflaeche speicherte, verlor seine
+         * Einstellungen, und die Oberflaeche meldete "gespeichert". */
+        if (!eb_config_feld_setzen('ein', $neu)) {
             http_response_code(500);
             echo "FEHLER;OK=0;GRUND=SPEICHERN\n";
             exit;
@@ -110,7 +118,7 @@ if ($eb_aktion === 'ein') {
         eb_log('Regelung ueber den Endpunkt ' . ($neu ? 'eingeschaltet' : 'ausgeschaltet') . '.');
     }
     /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei. */
-    echo "EIN=" . (int) eb_config()['ein'] . "\n";
+    echo "EIN=" . (int) eb_config(false)['ein'] . "\n";
     exit;
 }
 
@@ -130,8 +138,8 @@ if ($eb_aktion === 'stufe') {
     }
     $neu = (int) $roh;
     if ((int) $eb_cfg['stufe'] !== $neu) {
-        $eb_cfg['stufe'] = $neu;
-        if (!eb_config_speichern($eb_cfg)) {
+        /* Wie bei 'ein': EIN Feld, unter Sperre. */
+        if (!eb_config_feld_setzen('stufe', $neu)) {
             http_response_code(500);
             echo "FEHLER;OK=0;GRUND=SPEICHERN\n";
             exit;
@@ -139,7 +147,7 @@ if ($eb_aktion === 'stufe') {
         eb_log('Zielstufe ueber den Endpunkt auf ' . $neu . ' gestellt.');
     }
     /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei. */
-    $eb_frisch = eb_config();
+    $eb_frisch = eb_config(false);
     echo "STUFE=" . (int) $eb_frisch['stufe'] . ";ZIEL=" . (int) eb_ziel_w($eb_frisch) . "\n";
     exit;
 }

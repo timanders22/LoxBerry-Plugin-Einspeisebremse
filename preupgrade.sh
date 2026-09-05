@@ -37,7 +37,8 @@ DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
 echo "<OK> preupgrade abgeschlossen."
 
 # ---------- Langzeitwerte retten ----------
-# der Verlauf der Abregelungen - die Zahl, an der man ueber Wochen sieht, ob die Bremse wirkt.
+# der Verlauf der Abregelungen - die Zahl, an der man ueber Wochen sieht, ob
+# die Bremse wirkt - und die Bilanz mit Tages-, Vortags- und Monatswerten.
 # Der Installer loescht data/plugins/<x>/ bei JEDEM Update - gemessen an
 # sbin/plugininstall.pl (Zweig master, 23.08.2026): &purge_installation steht
 # im Upgrade-Zweig (:886), und ihr Rumpf loescht ohne Bedingung (:1631).
@@ -46,7 +47,7 @@ echo "<OK> preupgrade abgeschlossen."
 LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 mkdir -p "$LANG_SICHER" 2>/dev/null
 chmod 0700 "$LANG_SICHER" 2>/dev/null
-for LANG_F in verlauf.json; do
+for LANG_F in verlauf.json bilanz.json; do
     [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
         && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
 done

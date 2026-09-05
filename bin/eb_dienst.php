@@ -856,9 +856,27 @@ function eb_durchlauf($cfg, $stand)
         return $neu;
     }
 
-    $aendert = ($r['tat'] === EB_DROSSEL || $r['tat'] === EB_FREIGABE
-                || (int) round($r['drossel_w']) !== (int) round(
-                       isset($zust['drossel_w']) ? $zust['drossel_w'] : $r['drossel_w']));
+    /* ZWEI verschiedene Fragen, die bis 0.9.17 eine einzige waren:
+     *
+     *   $wert_neu  - hat sich der gestellte Wert wirklich geaendert?
+     *   $aendert   - soll der Befehl (erneut) hinausgehen?
+     *
+     * Das zweite ist absichtlich weiter gefasst: bei DROSSEL und FREIGABE
+     * wird auch dann gestellt, wenn der Wert gleich bleibt, weil ein
+     * SunSpec-Stellglied seinen Zeitablauf hat und die Drosselung sonst
+     * still ausliefe.
+     *
+     * Das ERSTE aber entscheidet ueber das Wirkungsfenster, und dort
+     * stand bis 0.9.17 dasselbe $aendert. Folge: nimmt das Geraet den
+     * Wert an und regelt trotzdem nicht, bleibt tat auf DROSSEL, das
+     * Fenster wurde in JEDEM Takt neu gestartet, vergangen_s blieb 0,
+     * und eb_wirkung() gibt unterhalb der Wartezeit immer 0 zurueck. Die
+     * Zeile "KEINE WIRKUNG" konnte genau in dem Fall nie erscheinen,
+     * fuer den sie gebaut wurde. */
+    $grenze_alt = isset($zust['drossel_w']) ? $zust['drossel_w'] : null;
+    $wert_neu = ($grenze_alt === null
+                 || (int) round($r['drossel_w']) !== (int) round($grenze_alt));
+    $aendert = ($r['tat'] === EB_DROSSEL || $r['tat'] === EB_FREIGABE || $wert_neu);
 
     if ($aendert) {
         $anteile = eb_aufteilen($r['drossel_w'], $steller);
@@ -876,14 +894,25 @@ function eb_durchlauf($cfg, $stand)
          * kleiner sein als GRENZE, wenn eine Spitzenleistung deckelt -
          * GRENZE allein sagt das nicht. */
         $neu['gestellt_w'] = $summe;
-        $neu['gestellt_um'] = $jetzt;
-        $neu['netz_vorher'] = ($netz === null) ? null : -$netz;   // Einspeisung vorher
-        $neu['grenze_vorher'] = isset($zust['drossel_w']) ? $zust['drossel_w'] : null;
-        $neu['wirkung'] = 0;
-        eb_log(sprintf('%s: Netz %s W, Ueberschuss %s W -> Grenze %d W (gestellt %d W), Ladesoll %d W',
-            $r['anlass'], $netz === null ? '-' : (int) $netz,
-            $r['ueberschuss_w'] === null ? '-' : (int) $r['ueberschuss_w'],
-            (int) $r['drossel_w'], (int) $summe, (int) $r['lade_soll_w']));
+        /* Das Fenster wird geoeffnet, wenn sich der Wert wirklich geaendert
+         * hat - oder wenn gerade keines laeuft (nach einem Urteil setzt
+         * die Auswertung unten gestellt_um auf 0 zurueck). Es wird NICHT
+         * bei jedem Auffrischen neu gestartet. */
+        if ($wert_neu || empty($neu['gestellt_um'])) {
+            $neu['gestellt_um'] = $jetzt;
+            $neu['netz_vorher'] = ($netz === null) ? null : -$netz;   // Einspeisung vorher
+            $neu['grenze_vorher'] = $grenze_alt;
+            $neu['wirkung'] = 0;
+        }
+        /* Nur die echte Aenderung kommt ins Protokoll. Bei stehender
+         * Grenze stuenden sonst im Fuenfsekundentakt 17280 gleichlautende
+         * Zeilen am Tag auf einer Ramdisk. */
+        if ($wert_neu) {
+            eb_log(sprintf('%s: Netz %s W, Ueberschuss %s W -> Grenze %d W (gestellt %d W), Ladesoll %d W',
+                $r['anlass'], $netz === null ? '-' : (int) $netz,
+                $r['ueberschuss_w'] === null ? '-' : (int) $r['ueberschuss_w'],
+                (int) $r['drossel_w'], (int) $summe, (int) $r['lade_soll_w']));
+        }
     }
 
     /* ---- Stellglieder mit Zeitablauf auffrischen ----
@@ -953,10 +982,16 @@ function eb_durchlauf($cfg, $stand)
         $w = eb_wirkung($neu['netz_vorher'], -$netz, $cfg['ziel_w'],
                         $cfg['wirkung_s'], $jetzt - $neu['gestellt_um']);
         if ($w !== 0) {
+            $vorher = isset($zust['wirkung']) ? (int) $zust['wirkung'] : 0;
             $neu['wirkung'] = $w;
-            if ($w === -1) {
+            /* Nur beim WECHSEL melden. Eine Anlage, die dauerhaft nicht
+             * folgt, schriebe sonst alle wirkung_s dieselbe Zeile. */
+            if ($w === -1 && $vorher !== -1) {
                 eb_log('KEINE WIRKUNG: die Grenze wurde gestellt, die Einspeisung ist nicht '
                      . 'gefallen. Nimmt das Geraet den Wert wirklich an?');
+            }
+            if ($w === 1 && $vorher === -1) {
+                eb_log('Die Drosselung wirkt wieder.');
             }
             $neu['gestellt_um'] = 0;
         }
@@ -974,6 +1009,30 @@ function eb_durchlauf($cfg, $stand)
  * Kleinrechner. Alle fuenf Minuten geht der volle Satz hinaus, damit ein
  * neu gestarteter Broker nicht dauerhaft leer bleibt.
  */
+/**
+ * Welche Themen gehen RETAINED hinaus?
+ *
+ * Hausstandard seit 03.09.2026: Zustaende ja - damit Loxone nach einem
+ * Neustart des Miniservers oder des Gateways sofort den Stand hat.
+ * Messwerte mit Zeitbezug nein - damit nach einem Ausfall kein alter Wert
+ * als aktueller erscheint. Das Lebenszeichen NIE: retained zeigte es
+ * immer "lebt", und genau das soll es nicht koennen.
+ *
+ * Bis 0.9.17 ging alles retained hinaus, weil keine der drei
+ * Aufrufstellen den dritten Parameter uebergab.
+ */
+function eb_mqtt_retained($k)
+{
+    /* Messwerte und Alter: der letzte gemessene Wert darf nach einem
+     * Ausfall nicht als aktueller Wert im Broker stehenbleiben. */
+    $fluechtig = array('netz', 'erzeugung', 'ueberschuss', 'grenze', 'gestellt',
+                       'ladesoll', 'alter', 'messalter', 'speichersoll', 'online');
+    if (in_array($k, $fluechtig, true)) { return false; }
+    /* stellerN/watt ist ebenfalls ein Messwert, stellerN/ok ein Zustand. */
+    if (preg_match('#^steller[0-9]+/watt$#', $k) === 1) { return false; }
+    return true;
+}
+
 function eb_veroeffentlichen($cfg, $stand)
 {
     static $letzte = array();
@@ -999,7 +1058,10 @@ function eb_veroeffentlichen($cfg, $stand)
         'speicher' => (int) $stand['speicher_folgt'],
         'alter' => max(0, time() - (int) $stand['zeit']),
         'messalter' => $stand['netz_alter'] === null ? '' : (int) round($stand['netz_alter']),
-        'online' => 1,
+        /* Das Lebenszeichen traegt den Zeitstempel im Wert und geht in
+         * JEDEM Durchlauf hinaus, nicht retained. Ein retained 'online'
+         * ohne Zeitbezug stuende nach einem Absturz fuer immer auf 1. */
+        'online' => '1;' . time(),
         'ersatz' => (int) $stand['ersatz'],
         'stufe' => (int) $stand['stufe'],
         'ziel' => (int) $stand['ziel_w'],
@@ -1018,10 +1080,21 @@ function eb_veroeffentlichen($cfg, $stand)
         /* alter und messalter aendern sich in jedem Durchlauf; sie wuerden
          * die Ersparnis auffressen und gehen deshalb nur im vollen Satz
          * hinaus. Wer das Alter braucht, liest es ueber den Endpunkt. */
+        /* 'online' geht bei JEDEM Durchgang hinaus - es ist das
+         * Lebenszeichen, und sein Wert wechselt durch den Zeitstempel
+         * ohnehin. 'alter' und 'messalter' wechseln in jedem Durchlauf und
+         * gehen nur im vollen Satz hinaus; wer das Alter genau braucht,
+         * rechnet es aus dem Zeitstempel des Lebenszeichens. */
+        if ($k === 'online') {
+            if (eb_mqtt_veroeffentlichen($praefix . '/online', $v, false)) { $letzte[$k] = $v; }
+            continue;
+        }
         $immer = ($k !== 'alter' && $k !== 'messalter');
         $neu = !array_key_exists($k, $letzte) || $letzte[$k] !== $v;
         if (!$voll && !($neu && $immer)) { continue; }
-        if (eb_mqtt_veroeffentlichen($praefix . '/' . $k, $v)) { $letzte[$k] = $v; }
+        if (eb_mqtt_veroeffentlichen($praefix . '/' . $k, $v, eb_mqtt_retained($k))) {
+            $letzte[$k] = $v;
+        }
     }
 }
 
@@ -1127,7 +1200,7 @@ function eb_mqtt_abmelden($cfg)
 {
     if (empty($cfg['mqtt_ein'])) { return; }
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
-    eb_mqtt_veroeffentlichen($praefix . '/online', 0);
+    eb_mqtt_veroeffentlichen($praefix . '/online', '0;' . time(), false);
 }
 
 /* ==================================================================
