@@ -3,9 +3,18 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.19 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.19
+
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 0.9.18 stand hier
+  `appearance: menulist` — dann zeichnet ihn der Browser, und er sieht in
+  jedem Browser anders aus. Am 05.09.2026 im Browser gegen die Rahmen-CSS des
+  Geräts gemessen (LoxBerry 4.0.0.15) und auf den Hausstandard
+  umgestellt
+  (`Regeln/04`). Sonst ist an dieser Fassung nichts geändert.
 
 ## Wofür
 
