@@ -277,7 +277,10 @@ function eb_formulare_zaehlen()
     foreach (array(__DIR__ . '/index.php', __FILE__) as $datei) {
         if (!is_file($datei)) { continue; }
         $t = (string) @file_get_contents($datei);
-        $teile = explode('<form', $t);
+        /* Zusammengesetzt, sonst zaehlt die Suche sich selbst: diese Datei
+         * gehoert zur Grundmenge, und 0.9.18/0.9.19 meldeten am Geraet
+         * "20 von 21" bei 20 gelieferten Formularen. */
+        $teile = explode('<' . 'form', $t);
         foreach ($teile as $i => $stueck) {
             if ($i === 0) { continue; }
             $ende = strpos($stueck, '</form>');
@@ -326,10 +329,14 @@ function eb_active_serverseitig()
 function eb_suchtexte_eindeutig()
 {
     $zeile = eb_zeile(eb_stand());
-    if (!preg_match_all('/;([A-Z0-9_]+)=/', $zeile, $tr)) {
-        return array(0, array());
+    /* Die Felder kommen aus der VORLAGE, nicht aus der Antwort. Bis 0.9.19
+     * wurden sie mit ;NAME= aus der Antwort gezogen - ein Feld, dessen
+     * Suchtext nie trifft, fehlte damit auch in der Pruefung (ERSATZ). */
+    $felder = array_keys(eb_felder());
+    foreach (eb_steller() as $nr => $unbenutzt) {
+        $felder[] = 'S' . $nr . 'W';
+        $felder[] = 'S' . $nr . 'OK';
     }
-    $felder = array_values(array_unique($tr[1]));
     $stoss = array();
     foreach ($felder as $a) {
         /* Der Suchtext, den die Vorlage wirklich traegt. Trifft er in
@@ -493,9 +500,14 @@ function eb_selbstpruefung()
         sprintf(eb_klartext('SP.STELLER_ZAHL'), count($steller)));
 
     $anlage = eb_anlage_max($steller);
-    $z[] = eb_pruefzeile(eb_klartext('SP.ANLAGE_MAX'), $anlage > 0 ? 1 : 0,
-        $anlage > 0 ? sprintf(eb_klartext('SP.ANLAGE_MAX_W'), $anlage)
-                    : eb_klartext('SP.ANLAGE_MAX_FEHLT'));
+    /* Ohne Stellglied gibt es keine Spitzenleistung zu kennen - das Kreuz
+     * steht dann schon eine Zeile hoeher. Ein zweites fuer dieselbe Ursache
+     * liest sich wie ein zweiter Fehler. */
+    $z[] = eb_pruefzeile(eb_klartext('SP.ANLAGE_MAX'),
+        !$steller ? -1 : ($anlage > 0 ? 1 : 0),
+        !$steller ? eb_klartext('SP.ANLAGE_MAX_OHNE')
+                  : ($anlage > 0 ? sprintf(eb_klartext('SP.ANLAGE_MAX_W'), $anlage)
+                                 : eb_klartext('SP.ANLAGE_MAX_FEHLT')));
 
     /* Der Speicherzweig wird nur beurteilt, wenn er ueberhaupt gewaehlt ist -
      * sonst waere die Zeile eine Beschwichtigung. */

@@ -41,6 +41,11 @@ PLUGIN=einspeisebremse
 DATA="$BASE/data/plugins/$PLUGIN"
 LOG="$BASE/log/plugins/$PLUGIN"
 PIDF="$DATA/dienst.pid"
+# Von preupgrade.sh gelegt, von postinstall.sh entfernt. Juenger als eine
+# Stunde: eine Installation laeuft, nicht starten. Aelter: eine
+# abgebrochene Installation hat sie liegen lassen - dann gilt sie nicht,
+# sonst stuende die Bremse fuer immer.
+SPERRE="$BASE/data/plugins/$PLUGIN.upgrade_laeuft"
 PHPBIN=$(command -v php || echo /usr/bin/php)
 
 mkdir -p "$DATA" "$LOG"
@@ -63,6 +68,14 @@ laeuft() {
 case "$1" in
     start)
         if laeuft; then echo "Einspeisebremse laeuft bereits (PID $(cat "$PIDF"))."; exit 0; fi
+        if [ -f "$SPERRE" ]; then
+            SEIT=$(cat "$SPERRE" 2>/dev/null)
+            case "$SEIT" in ""|*[!0-9]*) SEIT=0 ;; esac
+            if [ $(( $(date +%s) - SEIT )) -lt 3600 ]; then
+                echo "Eine Installation laeuft - der Dienst wird danach gestartet."
+                exit 0
+            fi
+        fi
         nohup "$PHPBIN" "$SELF/eb_dienst.php" >> "$LOG/dienst.out" 2>&1 &
         echo $! > "$PIDF"
         sleep 1

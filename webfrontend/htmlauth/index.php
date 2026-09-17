@@ -420,6 +420,7 @@ if ($eb_post && isset($_POST['speichern'])) {
         if (eb_config_speichern($eb_cfg)) {
             $eb_meldungen[] = eb_t('ALLG.GESPEICHERT');
             eb_log('Einstellungen gespeichert.');
+            eb_abo_datei($eb_cfg['mqtt_topic'], true);
         } else {
             $eb_fehler[] = eb_t('FEHLER.SPEICHERN');
         }
@@ -619,10 +620,10 @@ if ($eb_rahmen) {
 /* Nachgetragene Definitionen (CSS-Luecken-Durchgang 13.08.2026):
    benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
    bzw. der Referenzimplementierung uebernommen. */
-/* Auswahlfelder muessen als solche erkennbar sein. Ohne diese Zeilen baut
-   jQuery Mobile sie zu einem Knopf OHNE Pfeil um - dann sieht niemand, dass
-   es mehrere Eintraege gibt. Am 19.08.2026 an einem anderen Plugin gemeldet. */
-.sm-wrap select { -webkit-appearance: menulist; appearance: menulist;
+/* Rahmen, Breite und Schrift der Auswahlfelder. Den Pfeil zeichnet die
+   Regel weiter unten; das fruehere appearance: menulist stand hier und
+   wurde von ihr ueberschrieben, galt also nie. */
+.sm-wrap select {
   border: 1px solid #bbb; border-radius: 4px; padding: 4px 6px; background: #fff;
   font-size: 0.95em; min-width: 12em; }
 .sm-log { background: #1e1e1e; color: #ddd; font-family: monospace; font-size: 0.82em;
@@ -1035,10 +1036,11 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 
 <h3><?= eb_e(eb_t('MQTT.H_THEMEN')) ?></h3>
 <table class="sm-tbl">
-<tr><th><?= eb_e(eb_t('MQTT.SP_THEMA')) ?></th><th><?= eb_e(eb_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
+<tr><th><?= eb_e(eb_t('MQTT.SP_THEMA')) ?></th><th><?= eb_e(eb_t('MQTT.SP_BEDEUTUNG')) ?></th><th><?= eb_e(eb_t('MQTT.SP_RETAINED')) ?></th></tr>
 <?php foreach (eb_mqtt_themen() as $eb_k => $eb_schl) { ?>
 <tr><td><span class="sm-mono"><?= eb_e($eb_cfg['mqtt_topic'] . '/' . $eb_k) ?></span></td>
-    <td><?= eb_e(eb_t($eb_schl)) ?></td></tr>
+    <td><?= eb_e(eb_t($eb_schl)) ?></td>
+    <td><?= eb_e(eb_t(eb_mqtt_retained($eb_k) ? 'ALLG.JA' : 'ALLG.NEIN')) ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= eb_t('MQTT.STELLERN_HILFE') ?></p>
@@ -1051,10 +1053,13 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
  * lesbar (0), stehen BEIDE Faelle da: einen von beiden zu behaupten
  * waere fuer die Haelfte der Anlagen falsch. */
 $eb_gwf = (int) $eb_mqtt['fassung'];
+list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
 ?>
 <div class="sm-step"><?= eb_t('MQTT.ABO_EINLEITUNG') ?>
   <p><span class="sm-mono"><?= eb_e($eb_cfg['mqtt_topic']) ?>/#</span></p>
-<?php if ($eb_gwf >= 2) { ?>
+<?php if ($eb_abo_da && $eb_gwf <= 1) { ?>
+<div class="sm-hinweis"><?= eb_t('MQTT.ABO_MITGELIEFERT') ?></div>
+<?php } elseif ($eb_gwf >= 2) { ?>
 <div class="sm-hinweis"><?= eb_t('MQTT.ABO_V2') ?></div>
 <?php } elseif ($eb_gwf === 1) { ?>
 <div class="sm-warnung"><?= eb_t('MQTT.ABO_PFLICHT') ?></div>

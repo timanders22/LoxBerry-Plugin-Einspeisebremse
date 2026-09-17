@@ -75,6 +75,8 @@ rm -rf "$BASE/data/plugins/$PFOLDER"
 # uebersteht sie auch das Deinstallieren - und muss hier weg. Darin liegt
 # verlauf.json, keine Zugangsdaten, aber Verlaufsdaten sind auch Daten.
 rm -rf "$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+# Seit 0.9.20 die Marke "Aktualisierung laeuft", aus demselben Grund.
+rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 
 echo "<OK> Einspeisebremse entfernt, Sicherungsdatei geloescht."
 exit 0

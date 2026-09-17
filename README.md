@@ -3,9 +3,61 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.19 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.20 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.20
+
+Am 17.09.2026 an der installierten 0.9.19 gemessen und behoben:
+
+- **Beim Aktualisieren gingen Verlauf und Monatsbilanz verloren.** Der
+  Installer legt den Minutentakt rund eine Minute vor `postinstall.sh` an; am
+  08.09.2026 startete er in dieser Lücke den neuen Dienst (03:32:00,
+  `postinstall.sh` erst 03:32:24). Der Dienst legte Verlauf und Bilanz neu an,
+  und die Rettung hielt sie für schon vorhanden. `preupgrade.sh` legt jetzt
+  eine Marke, solange sie liegt, startet `dienst.sh` nicht; `postinstall.sh`
+  holt die Sicherung dann ohne Rückfrage zurück und entfernt die Marke vor dem
+  Start. Die Konfiguration war nicht betroffen — sie kam aus der Zweitschrift.
+- **`online` ist wieder 1 oder 0.** 0.9.18 hatte daraus `1;<Zeitstempel>`
+  gemacht; ein Baustein, der auf 1 prüft, sah seitdem keine 1 mehr. Der
+  Zeitstempel steht jetzt dort, wo der Hausstandard ihn vorsieht:
+  `status/ts`, dazu `status/ok` (1 = der Durchlauf hatte einen Zählerwert) und
+  `status/zaehler` (0 bis 999). Alle vier gehen bei jedem Durchlauf und nie
+  retained hinaus.
+- **Alte zurückbehaltene Messwerte werden abgeräumt.** Bis 0.9.17 ging alles
+  retained hinaus; im Broker lagen deshalb noch `netz`, `erzeugung`, `grenze`,
+  `online` und vier weitere aus der Zeit vor dem Upgrade am 08.09. Beim
+  Dienststart wird jedes Thema, das nicht mehr retained ist, einmal mit
+  leerer Nutzlast gelöscht.
+- **Die Themen-Tabelle sagt je Thema, ob es retained ist.** Dieselbe Funktion
+  entscheidet beim Senden.
+- **Fehlende Einstellungen werden beim Dienststart eingetragen**, einmal und mit
+  Protokollzeile (am Gerät fehlten `q_erzeugung2` und `q_erzeugung3`).
+- **Reiter Test:** „Tragen alle Formulare das Merkmal?" zählte seinen eigenen
+  Suchtext mit und meldete 20 von 21; „Ist die Anlagenleistung bekannt?"
+  kreuzte ohne Stellglied ein zweites Mal für dieselbe Ursache und ist dann
+  ein Hinweis.
+- Die unwirksame `appearance: menulist` ist aus der Stilvorlage entfernt.
+- **Das Gateway-Abo kommt mit.** Bis 0.9.19 musste `einspeisebremse/#` von
+  Hand im MQTT-Gateway eingetragen werden; am Gerät stand es nicht da, am
+  Miniserver kam über MQTT nichts an. Das Plugin legt jetzt
+  `mqtt_subscriptions.cfg` in seinen Konfigurationsordner, die das Gateway
+  selbst liest, und führt sie beim Speichern und beim Dienststart auf den
+  eingestellten Präfix nach.
+- **Das Lebenszeichen geht höchstens alle 30 s hinaus**, nicht bei jedem
+  Takt: mit dem Abo schickt das Gateway jeden Wert als eigenen Aufruf an den
+  Miniserver.
+- **HTTP-Antwort: `ERSATZ` wurde von Loxone nie gefunden.** Die zweite Zeile
+  begann mit `ERSATZ=`, der Suchtext lautet aber `\i;ERSATZ=\i`. Sie beginnt
+  jetzt mit `STATUS;`. Die Prüfzeile im Reiter Test nimmt die Felder aus der
+  Vorlage statt aus der Antwort und hätte es so gefunden. Neu in derselben
+  Zeile: `OK` (Zählerwert vorhanden) und `ZAEHLER` (0 bis 999) — für diese
+  beiden die Vorlage im Reiter *Loxone* neu importieren.
+- **Eine Quelle, die `null` liefert, heißt jetzt `wert_null`** und eine, deren
+  Schlüssel fehlt, `pfad_fehlt`. Bisher hieß beides `pfad_leer`, und das las
+  sich wie ein leeres Eingabefeld. Fronius liefert `P_Akku: null`, wenn der
+  Speicher ruht; `null` wird nicht in 0 umgedeutet.
 
 ## Neu in 0.9.19
 

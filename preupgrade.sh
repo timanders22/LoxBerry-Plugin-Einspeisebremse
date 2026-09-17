@@ -22,6 +22,18 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+# Zuerst die Marke "Aktualisierung laeuft". Der Installer legt die
+# Cron-Datei rund eine Minute VOR postinstall.sh neu an; am 08.09.2026
+# startete der Minutentakt in dieser Luecke den neuen Dienst (03:32:00,
+# postinstall erst 03:32:24). Der legte Verlauf und Bilanz selbst an, und
+# die Rettung unten in postinstall.sh uebersprang sich. dienst.sh startet
+# nicht, solange die Marke liegt; postinstall.sh entfernt sie. Sie liegt
+# NEBEN dem Datenordner, weil purge_installation den Ordner selbst loescht.
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+date +%s > "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
+[ -s "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ] \
+    && echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
+
 CF="$BASE/config/plugins/$PFOLDER/einspeisebremse.json"
 if [ -f "$CF" ]; then
     cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" \

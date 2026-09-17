@@ -104,6 +104,31 @@ fi
 # und loeschte die Sicherung trotzdem. Wer die Reihenfolge wieder dreht,
 # nimmt jedem Anwender bei jedem Update Verlauf und Monatsbilanz.
 LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+SPERRE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+# Liegt die Marke aus preupgrade.sh, ist die Sicherung von eben: dann wird
+# zurueckgeholt, was dort liegt, ohne nach dem Inhalt der Zieldatei zu
+# fragen. Die Inhaltspruefung allein hat am 08.09.2026 nicht gereicht - ein
+# vom Minutentakt gestarteter Dienst hatte schon echte Punkte geschrieben.
+# Laeuft trotz Marke ein Dienst (der alte Takt in der Sekunde vor dem
+# Abraeumen), wird er zuerst angehalten, sonst schriebe er darueber.
+FRISCH=""
+if [ -f "$SPERRE" ]; then
+    FRISCH="ja"
+    [ -x "$PBIN/dienst.sh" ] && "$PBIN/dienst.sh" stop >/dev/null 2>&1
+    # Ein Dienst, dessen PID-Datei mit dem Datenordner geloescht wurde, ist
+    # fuer dienst.sh unsichtbar. Er wuerde neben dem neuen weiterlaufen und
+    # seinen Verlauf aus dem Speicher ueber die gerettete Datei schreiben.
+    # Nur die eigene Befehlszeile, nur die eigenen Prozesse.
+    WAISEN=$(pgrep -u "$(id -u)" -f "bin/plugins/$PFOLDER/eb_dienst\.php$" 2>/dev/null)
+    if [ -n "$WAISEN" ]; then
+        kill $WAISEN 2>/dev/null
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            pgrep -u "$(id -u)" -f "bin/plugins/$PFOLDER/eb_dienst\.php$" >/dev/null 2>&1 || break
+            sleep 1
+        done
+        echo "<INFO> Ein Dienst ohne PID-Datei lief waehrend der Installation und wurde beendet."
+    fi
+fi
 if [ -d "$LANG_SICHER" ]; then
     for LANG_F in verlauf.json bilanz.json; do
         [ -f "$LANG_SICHER/$LANG_F" ] || continue
@@ -113,7 +138,7 @@ if [ -d "$LANG_SICHER" ]; then
         # und haette die Rettung sonst verhindert. Dieselbe Sorgfalt wie
         # oben bei der Konfiguration.
         DA=""
-        if [ -s "$ZIEL" ]; then
+        if [ -z "$FRISCH" ] && [ -s "$ZIEL" ]; then
             INH=$(tr -d ' \n\r\t' < "$ZIEL" 2>/dev/null)
             case "$INH" in
                 ''|'{}'|'[]'|'{"punkte":[]}') DA="" ;;
@@ -131,6 +156,8 @@ if [ -d "$LANG_SICHER" ]; then
     done
     rm -rf "$LANG_SICHER" 2>/dev/null
 fi
+# Die Marke VOR dem Start entfernen - sonst verweigert dienst.sh ihn.
+rm -f "$SPERRE" 2>/dev/null
 
 # ---------- Dienst starten ----------
 # Der Dienst misst und zeigt an. GESTELLT wird erst, wenn der Mensch die

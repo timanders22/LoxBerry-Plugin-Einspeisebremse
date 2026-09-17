@@ -171,6 +171,16 @@ function eb_hoerer_abholen()
  * ================================================================== */
 
 /** Einen Wert aus einer JSON-Struktur holen: a.b.0.c */
+/** Gibt es den Schluessel in der Antwort - auch wenn sein Wert null ist? */
+function eb_json_pfad_da($daten, $pfad)
+{
+    foreach (explode('.', $pfad) as $teil) {
+        if (!is_array($daten) || !array_key_exists($teil, $daten)) { return false; }
+        $daten = $daten[$teil];
+    }
+    return true;
+}
+
 function eb_json_pfad($daten, $pfad)
 {
     if ($pfad === '') { return $daten; }
@@ -553,7 +563,14 @@ function eb_quelle_lesen($q)
         $d = json_decode((string) $roh, true);
         if (!is_array($d)) { return array(null, $alter, 'kein_json'); }
         $roh = eb_json_pfad($d, $q['pfad']);
-        if ($roh === null) { return array(null, $alter, 'pfad_leer'); }
+        /* Zwei Faelle, die bis 0.9.19 beide 'pfad_leer' hiessen - und das las
+         * sich wie ein leeres Eingabefeld. Am 17.09.2026 nachts gemessen:
+         * Fronius liefert "P_Akku": null, wenn der Speicher ruht. Der Pfad
+         * stimmt dann, das Geraet sagt ausdruecklich "kein Wert". Das wird
+         * NICHT zu 0 - was null bei Sonne bedeutet, ist nicht gemessen. */
+        if ($roh === null) {
+            return array(null, $alter, eb_json_pfad_da($d, $q['pfad']) ? 'wert_null' : 'pfad_fehlt');
+        }
     }
 
     list($taugt, $anlass) = eb_messwert_taugt($roh);
@@ -586,8 +603,11 @@ function eb_mqtt_wert_saeubern_d($v)
 function eb_mqtt_veroeffentlichen($thema, $wert, $retained = true)
 {
     $b = eb_broker();
-    $argv = array('mosquitto_pub', '-h', $b['host'], '-p', (string) $b['port'],
-                  '-t', $thema, '-m', eb_mqtt_wert_saeubern_d($wert));
+    $argv = array('mosquitto_pub', '-h', $b['host'], '-p', (string) $b['port'], '-t', $thema);
+    /* null heisst: leere Nutzlast. Mit Retain LOESCHT sie das Thema im
+     * Broker - nur eb_mqtt_abraeumen() ruft so. */
+    if ($wert === null) { $argv[] = '-n'; }
+    else { $argv[] = '-m'; $argv[] = eb_mqtt_wert_saeubern_d($wert); }
     if ($retained) { $argv[] = '-r'; }
     if ($b['user'] !== '') { $argv[] = '-u'; $argv[] = $b['user']; }
     if ($b['pass'] !== '') { $argv[] = '-P'; $argv[] = $b['pass']; }
@@ -1009,36 +1029,59 @@ function eb_durchlauf($cfg, $stand)
  * Kleinrechner. Alle fuenf Minuten geht der volle Satz hinaus, damit ein
  * neu gestarteter Broker nicht dauerhaft leer bleibt.
  */
+/* eb_mqtt_retained() steht seit 0.9.20 in eb_lib.php - die Themen-Tabelle
+ * der Oberflaeche zeigt dieselbe Antwort, nach der hier gesendet wird. */
+
 /**
- * Welche Themen gehen RETAINED hinaus?
+ * Alte zurueckbehaltene Werte abraeumen, einmal je Praefix im Prozess.
  *
- * Hausstandard seit 03.09.2026: Zustaende ja - damit Loxone nach einem
- * Neustart des Miniservers oder des Gateways sofort den Stand hat.
- * Messwerte mit Zeitbezug nein - damit nach einem Ausfall kein alter Wert
- * als aktueller erscheint. Das Lebenszeichen NIE: retained zeigte es
- * immer "lebt", und genau das soll es nicht koennen.
- *
- * Bis 0.9.17 ging alles retained hinaus, weil keine der drei
- * Aufrufstellen den dritten Parameter uebergab.
+ * Bis 0.9.17 ging alles retained hinaus. Seit 0.9.18 gehen Messwerte und
+ * Lebenszeichen ohne Retain - aber was damals zurueckbehalten wurde, lag
+ * weiter im Broker. Am 17.09.2026 am Geraet gemessen: netz 8, erzeugung
+ * 1061, grenze 1085, online 0 und vier weitere, alle aus der Zeit vor
+ * dem Upgrade am 08.09.2026 (0.9.19 sendet sie ohne Retain). Ein
+ * Miniserver, der neu startet, bekaeme sie als frische Werte. Eine leere
+ * Nutzlast mit Retain loescht ein Thema; auf ein Thema ohne
+ * zurueckbehaltenen Wert wirkt sie nicht. Welche Themen: genau die, fuer
+ * die eb_mqtt_retained() nein sagt - dieselbe Quelle wie beim Senden.
  */
-function eb_mqtt_retained($k)
+function eb_mqtt_abraeumen($praefix)
 {
-    /* Messwerte und Alter: der letzte gemessene Wert darf nach einem
-     * Ausfall nicht als aktueller Wert im Broker stehenbleiben. */
-    $fluechtig = array('netz', 'erzeugung', 'ueberschuss', 'grenze', 'gestellt',
-                       'ladesoll', 'alter', 'messalter', 'speichersoll', 'online');
-    if (in_array($k, $fluechtig, true)) { return false; }
-    /* stellerN/watt ist ebenfalls ein Messwert, stellerN/ok ein Zustand. */
-    if (preg_match('#^steller[0-9]+/watt$#', $k) === 1) { return false; }
-    return true;
+    $n = 0;
+    foreach (array_keys(eb_mqtt_themen()) as $k) {
+        $namen = array($k);
+        if (strpos($k, 'stellerN/') === 0) {
+            $namen = array();
+            for ($i = 1; $i <= EB_STELLER; $i++) { $namen[] = 'steller' . $i . substr($k, 8); }
+        }
+        foreach ($namen as $name) {
+            if (eb_mqtt_retained($name)) { continue; }
+            if (eb_mqtt_veroeffentlichen($praefix . '/' . $name, null, true)) { $n++; }
+        }
+    }
+    return $n;
 }
 
 function eb_veroeffentlichen($cfg, $stand)
 {
     static $letzte = array();
     static $voll_um = 0.0;
+    static $abgeraeumt = null;
+    static $lebt_um = 0.0;
     if (empty($cfg['mqtt_ein'])) { return; }
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    if ($abgeraeumt !== $praefix) {
+        eb_mqtt_abraeumen($praefix);
+        $abgeraeumt = $praefix;
+        $letzte = array();       // neuer Praefix: der volle Satz geht hinaus
+    }
+    /* Das Lebenszeichen hoechstens alle 30 s. Seit 0.9.20 bringt das Plugin
+     * sein Gateway-Abo mit, und das Gateway schickt jeden Wert als eigenen
+     * HTTP-Aufruf an den Miniserver (am Geraet: use_http=1). Beim
+     * Vorgabetakt von 5 s waeren das vier Aufrufe je Takt allein fuer das
+     * Lebenszeichen. 30 s liegen unter der Notfallgrenze (Vorgabe 60 s). */
+    $lebt = ($jetzt_lz = microtime(true)) - $lebt_um >= 30.0;
+    if ($lebt) { $lebt_um = $jetzt_lz; }
     $jetzt = microtime(true);
     $voll = ($jetzt - $voll_um) > 300.0;
     if ($voll) { $voll_um = $jetzt; }
@@ -1058,10 +1101,14 @@ function eb_veroeffentlichen($cfg, $stand)
         'speicher' => (int) $stand['speicher_folgt'],
         'alter' => max(0, time() - (int) $stand['zeit']),
         'messalter' => $stand['netz_alter'] === null ? '' : (int) round($stand['netz_alter']),
-        /* Das Lebenszeichen traegt den Zeitstempel im Wert und geht in
-         * JEDEM Durchlauf hinaus, nicht retained. Ein retained 'online'
-         * ohne Zeitbezug stuende nach einem Absturz fuer immer auf 1. */
-        'online' => '1;' . time(),
+        /* Das Lebenszeichen geht in JEDEM Durchlauf hinaus, nicht retained
+         * (Regeln/07). 'online' behaelt seine Bedeutung 1/0 - 0.9.18 hatte
+         * daraus "1;<zeit>" gemacht, und jeder Baustein, der auf 1 prueft,
+         * sah seitdem nie mehr eine 1. Der Zeitstempel steht in status/ts. */
+        'online' => 1,
+        'status/ok' => $stand['netz'] === null ? 0 : 1,
+        'status/ts' => time(),
+        'status/zaehler' => isset($stand['zaehler']) ? (int) $stand['zaehler'] : 0,
         'ersatz' => (int) $stand['ersatz'],
         'stufe' => (int) $stand['stufe'],
         'ziel' => (int) $stand['ziel_w'],
@@ -1080,13 +1127,13 @@ function eb_veroeffentlichen($cfg, $stand)
         /* alter und messalter aendern sich in jedem Durchlauf; sie wuerden
          * die Ersparnis auffressen und gehen deshalb nur im vollen Satz
          * hinaus. Wer das Alter braucht, liest es ueber den Endpunkt. */
-        /* 'online' geht bei JEDEM Durchgang hinaus - es ist das
-         * Lebenszeichen, und sein Wert wechselt durch den Zeitstempel
-         * ohnehin. 'alter' und 'messalter' wechseln in jedem Durchlauf und
-         * gehen nur im vollen Satz hinaus; wer das Alter genau braucht,
-         * rechnet es aus dem Zeitstempel des Lebenszeichens. */
-        if ($k === 'online') {
-            if (eb_mqtt_veroeffentlichen($praefix . '/online', $v, false)) { $letzte[$k] = $v; }
+        /* Das Lebenszeichen geht alle 30 s hinaus, am Aenderungsfilter
+         * vorbei - sonst waere 'online' nach dem ersten Senden stumm.
+         * 'alter' und 'messalter' wechseln in jedem Durchlauf und gehen nur
+         * im vollen Satz hinaus; wer das Alter genau braucht, rechnet es
+         * aus status/ts. */
+        if ($k === 'online' || strpos($k, 'status/') === 0) {
+            if ($lebt && eb_mqtt_veroeffentlichen($praefix . '/' . $k, $v, false)) { $letzte[$k] = $v; }
             continue;
         }
         $immer = ($k !== 'alter' && $k !== 'messalter');
@@ -1200,7 +1247,7 @@ function eb_mqtt_abmelden($cfg)
 {
     if (empty($cfg['mqtt_ein'])) { return; }
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
-    eb_mqtt_veroeffentlichen($praefix . '/online', '0;' . time(), false);
+    eb_mqtt_veroeffentlichen($praefix . '/online', 0, false);
 }
 
 /* ==================================================================
@@ -1340,7 +1387,9 @@ if ($eb_hat('--einmal')) {
     $cfg = eb_config();
     eb_hoerer_starten($cfg);
     for ($i = 0; $i < 30; $i++) { usleep(100000); eb_hoerer_abholen(); }
-    $neu = eb_durchlauf($cfg, eb_stand());
+    $vor = eb_stand();
+    $neu = eb_durchlauf($cfg, $vor);
+    $neu['zaehler'] = (isset($vor['zaehler']) ? (int) $vor['zaehler'] + 1 : 0) % 1000;
     eb_json_schreiben($eb_p['datadir'] . '/stand.json', $neu);
     eb_bilanz_fortschreiben($cfg, $neu, microtime(true));
     eb_verlauf_fortschreiben($cfg, $neu, microtime(true));
@@ -1359,6 +1408,12 @@ if (function_exists('pcntl_signal')) {
 }
 
 $eb_cfg = eb_config();
+/* Regeln/05: fehlende Schluessel beim Dienststart einmal mit ihrer Vorgabe
+ * in die Datei schreiben. Am 17.09.2026 am Geraet: 30 von 32 Schluesseln,
+ * q_erzeugung2 und q_erzeugung3 fehlten seit ihrer Einfuehrung. */
+if (eb_config_vervollstaendigen()) { $eb_cfg = eb_config(); }
+/* Das Gateway-Abo auf den aktuellen Praefix bringen (siehe eb_abo_datei). */
+eb_abo_datei($eb_cfg['mqtt_topic'], true);
 $eb_themen_alt = implode('|', eb_themen($eb_cfg));
 eb_hoerer_starten($eb_cfg);
 /* Dem Zuhoerer dieselbe Anlaufzeit geben wie --einmal und --probe. Ohne
@@ -1393,7 +1448,11 @@ while ($eb_laeuft) {
             $eb_themen_alt = $themen_neu;
         }
 
-        $eb_neu = eb_durchlauf($eb_cfg, eb_stand());
+        $eb_vor = eb_stand();
+        $eb_neu = eb_durchlauf($eb_cfg, $eb_vor);
+        /* Der Laufzaehler steht in stand.json: die HTTP-Antwort liest ihn
+         * dort, MQTT nimmt denselben Wert. */
+        $eb_neu['zaehler'] = (isset($eb_vor['zaehler']) ? (int) $eb_vor['zaehler'] + 1 : 0) % 1000;
         eb_json_schreiben($eb_p['datadir'] . '/stand.json', $eb_neu);
         eb_bilanz_fortschreiben($eb_cfg, $eb_neu, $jetzt);
         eb_verlauf_fortschreiben($eb_cfg, $eb_neu, $jetzt);

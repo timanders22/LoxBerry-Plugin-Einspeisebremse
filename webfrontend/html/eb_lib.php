@@ -470,6 +470,40 @@ function eb_config_speichern($cfg)
 }
 
 /**
+ * Fehlende Schluessel EINMAL mit ihrer Vorgabe in die Datei schreiben.
+ *
+ * Regeln/05: die Konfiguration wird vervollstaendigt, nicht nur beim
+ * Lesen ergaenzt - beim Speichern (eb_config_speichern schreibt den
+ * vollen Satz) und beim Dienststart (hier). Nur an einer heilen Datei:
+ * eine leere oder kaputte heilt eb_config() aus der Zweitschrift, und
+ * ein unlesbarer Wert soll im Reiter Test gesehen und nicht beim Start
+ * still durch die Vorgabe ersetzt werden. Fremde Schluessel bleiben
+ * stehen. Rueckgabe: die ergaenzten Schluessel.
+ */
+function eb_config_vervollstaendigen()
+{
+    $p = eb_paths();
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $daten = $roh === '' ? null : json_decode($roh, true);
+    if (!is_array($daten) || !array_key_exists('aktionstoken', $daten)) { return array(); }
+    $fehlt = array_keys(array_diff_key(eb_vorgaben(), $daten));
+    if (!$fehlt) { return array(); }
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    $fp = @fopen($p['datadir'] . '/config.lock', 'c+');
+    if ($fp === false || !@flock($fp, LOCK_EX)) {
+        if ($fp !== false) { fclose($fp); }
+        return array();
+    }
+    $cfg = eb_config();
+    $ok = (eb_config_lage() === 'ok') && eb_config_speichern($cfg);
+    @flock($fp, LOCK_UN);
+    fclose($fp);
+    if (!$ok) { return array(); }
+    eb_log('Konfiguration vervollstaendigt, mit Vorgabe eingetragen: ' . implode(', ', $fehlt));
+    return $fehlt;
+}
+
+/**
  * EIN Feld der Konfiguration aendern, unter Sperre.
  *
  * Der Endpunkt und die Oberflaeche schreiben dieselbe Datei. Ohne Sperre
@@ -1219,6 +1253,64 @@ function eb_mqtt_wert_saeubern($v)
     return trim(preg_replace('/ {2,}/', ' ', $wert));
 }
 
+/**
+ * Welche Themen gehen RETAINED hinaus?
+ *
+ * Hausstandard seit 03.09.2026: Zustaende ja - damit Loxone nach einem
+ * Neustart des Miniservers oder des Gateways sofort den Stand hat.
+ * Messwerte mit Zeitbezug nein - damit nach einem Ausfall kein alter Wert
+ * als aktueller erscheint. Das Lebenszeichen NIE: retained zeigte es
+ * immer "lebt", und genau das soll es nicht koennen.
+ *
+ * Bis 0.9.17 ging alles retained hinaus, weil keine der drei
+ * Aufrufstellen den dritten Parameter uebergab. Seit 0.9.20 steht die
+ * Funktion hier: der Dienst sendet danach, die Themen-Tabelle zeigt es,
+ * und der Dienst raeumt danach ab.
+ */
+function eb_mqtt_retained($k)
+{
+    /* Messwerte und Alter: der letzte gemessene Wert darf nach einem
+     * Ausfall nicht als aktueller Wert im Broker stehenbleiben. */
+    $fluechtig = array('netz', 'erzeugung', 'ueberschuss', 'grenze', 'gestellt',
+                       'ladesoll', 'alter', 'messalter', 'speichersoll', 'online');
+    if (in_array($k, $fluechtig, true)) { return false; }
+    /* Das Lebenszeichen nach Regeln/07. */
+    if (strpos($k, 'status/') === 0) { return false; }
+    /* stellerN/watt ist ebenfalls ein Messwert, stellerN/ok ein Zustand. */
+    if (preg_match('#^steller([0-9]+|N)/watt$#', $k) === 1) { return false; }
+    return true;
+}
+
+/**
+ * Die Abo-Datei des MQTT-Gateways: config/plugins/<ordner>/mqtt_subscriptions.cfg.
+ *
+ * Das Gateway (V1) liest sie selbst und abonniert jede Zeile - am Geraet
+ * belegt am 13.09.2026 an Midea2Lox. Plugin-Abos stehen NICHT in der
+ * Abo-Liste der Gateway-Oberflaeche, das Gateway haelt sie im Speicher.
+ * Bis 0.9.19 musste der Anwender das Abo von Hand eintragen; am 17.09.2026
+ * stand es am Geraet nicht da, und am Miniserver kam ueber MQTT nichts an.
+ *
+ * Das Archiv bringt die Datei mit dem Vorgabepraefix mit. Der Praefix ist
+ * aber einstellbar - deshalb wird sie auf den aktuellen nachgeschrieben,
+ * und zwar nur, wenn sie abweicht. Rueckgabe: array(Pfad, traegt das Abo).
+ */
+function eb_abo_datei($praefix, $schreiben = false)
+{
+    $p = eb_paths();
+    $pfad = $p['configdir'] . '/mqtt_subscriptions.cfg';
+    $soll = trim((string) $praefix, '/') . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && $roh !== $soll . "\n" && is_dir($p['configdir'])) {
+        if (@file_put_contents($pfad, $soll . "\n") !== false) {
+            @chmod($pfad, 0644);
+            eb_log('Gateway-Abo gesetzt: ' . $soll);
+            $da = true;
+        }
+    }
+    return array($pfad, $da);
+}
+
 function eb_mqtt_themen()
 {
     return array(
@@ -1239,6 +1331,9 @@ function eb_mqtt_themen()
         'speichersoll'   => 'EB_MQTT.SPEICHERSOLL',
         'speicherok'     => 'EB_MQTT.SPEICHEROK',
         'online'         => 'EB_MQTT.ONLINE',
+        'status/ok'      => 'EB_MQTT.STATUS_OK',
+        'status/ts'      => 'EB_MQTT.STATUS_TS',
+        'status/zaehler' => 'EB_MQTT.STATUS_ZAEHLER',
         'ersatz'         => 'EB_MQTT.ERSATZ',
         'stufe'          => 'EB_MQTT.STUFE',
         'ziel'           => 'EB_MQTT.ZIEL',
@@ -1327,6 +1422,12 @@ function eb_felder()
         /* Die gewaehlte Zielstufe, 0 bis 2. */
         'STUFE'       => array('',  0,       2,       'EB_FELD.STUFE', 'EB_TITEL.STUFE'),
         'ZIEL'        => array('W', 0,       200000,  'EB_FELD.ZIEL', 'EB_TITEL.ZIEL'),
+        /* Lebenszeichen nach Regeln/07, seit 0.9.20. OK: der letzte Durchlauf
+         * hatte einen Zaehlerwert. ZAEHLER laeuft je Durchlauf 0..999 um -
+         * steht er, steht der Dienst, auch wenn der Miniserver die letzte
+         * Antwort noch im Speicher hat. */
+        'OK'          => array('',  0,       1,       'EB_FELD.OK', 'EB_TITEL.OK'),
+        'ZAEHLER'     => array('',  0,       999,     'EB_FELD.ZAEHLER', 'EB_TITEL.ZAEHLER'),
     );
 }
 
@@ -1424,9 +1525,13 @@ function eb_zeile($stand)
         (int) $h('tat'),
         $w($h('gestellt_w')),
         $h('speicher_folgt') === null ? -1 : (int) $h('speicher_folgt'));
-    $o .= sprintf("ERSATZ=%d;STUFE=%d;ZIEL=%d\n",
+    /* "STATUS;" vorn: die Suchtexte lauten \i;NAME=\i, und bis 0.9.19
+     * begann diese Zeile mit "ERSATZ=" - ohne Semikolon davor traf der
+     * Suchtext fuer ERSATZ nie (gemessen 17.09.2026). */
+    $o .= sprintf("STATUS;ERSATZ=%d;STUFE=%d;ZIEL=%d;OK=%d;ZAEHLER=%d\n",
         empty($stand['ersatz']) ? 0 : 1,
-        (int) $h('stufe'), (int) $h('ziel_w'));
+        (int) $h('stufe'), (int) $h('ziel_w'),
+        $h('netz') === null ? 0 : 1, (int) $h('zaehler'));
     foreach ((array) (isset($stand['steller']) ? $stand['steller'] : array()) as $nr => $e) {
         $o .= sprintf("STELLER%d;S%dW=%s;S%dOK=%s\n",
             (int) $nr, (int) $nr, $w(isset($e['watt']) ? $e['watt'] : null),
