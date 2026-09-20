@@ -130,7 +130,7 @@ if [ -f "$SPERRE" ]; then
     fi
 fi
 if [ -d "$LANG_SICHER" ]; then
-    for LANG_F in verlauf.json bilanz.json; do
+    for LANG_F in verlauf.json bilanz.json retain_stellbefehl.json; do
         [ -f "$LANG_SICHER/$LANG_F" ] || continue
         ZIEL="$BASE/data/plugins/$PFOLDER/$LANG_F"
         # Gegen den INHALT pruefen, nicht nur gegen "nicht leer": eine

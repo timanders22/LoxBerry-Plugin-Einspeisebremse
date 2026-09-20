@@ -3,9 +3,54 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.20 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.21 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.21
+
+- **Der Stellbefehl über MQTT geht ohne Retain hinaus.** Bis 0.9.20 blieb
+  der zuletzt gestellte Wert im Broker stehen, und der Broker stellte ihn bei
+  jeder Neuverbindung des Geräts oder eines weiteren Abnehmers erneut zu —
+  auch Stunden später, wenn er längst nicht mehr galt. Das betrifft das
+  Stellen, die Freigabe beim Ausschalten und beim Deinstallieren und den
+  Speicher-Sollwert; HTTP und SunSpec waren nie betroffen. Beim Beenden des
+  Dienstes wird weiterhin nichts gestellt.
+- **Ein alter zurückbehaltener Stellwert wird einmal abgeräumt** — beim
+  ersten Stellen nach dem Update, je Broker und Thema. Das Abräumen ist eine
+  leere Nachricht mit Retain, und die erreicht auch das Gerät. Deshalb sieht
+  die Bremse zuerst nach, ob dort wirklich ein zurückbehaltener Wert steht,
+  und schickt den gültigen Wert unmittelbar hinterher (im Prüfstand in drei
+  Läufen 29 bis 86 ms später, mit nachgebautem `mosquitto_pub`). Lässt sich
+  nicht feststellen, ob etwas dasteht, wird nichts
+  abgeräumt. Ein Thema mit Platzhalter (`{W}` im Thema) und ein früher
+  eingetragenes, inzwischen geändertes Thema prüft die Bremse nicht; der
+  Reiter *Test* (MQTT) zeigt je Stellglied, was nachgesehen ist, und die
+  beiden Befehle, mit denen man es selbst tut.
+- Nach einem Dienststart kann das **erste Stellen bis zu etwa zwei Sekunden
+  später** hinausgehen, einmal je MQTT-Stellglied, solange noch nicht
+  nachgesehen ist.
+- **MQTT-Stellglieder bekommen ihre Grenze regelmäßig erneut.** Ohne Retain
+  bekäme ein Gerät, das neu startet oder die Verbindung verliert, seine Grenze
+  erst bei der nächsten Änderung — bei stehender Grenze womöglich stundenlang
+  nicht. Neu je Stellglied: **MQTT: erneut senden alle (s)**, Vorgabe 300,
+  `0` = aus, weniger als 10 s geht nicht. Gesendet wird nur, solange
+  gedrosselt wird (Anteil unter der Spitzenleistung; ohne eingetragene
+  Spitzenleistung: solange die Gesamtgrenze unter dem Freigabewert liegt), und
+  jede Änderung setzt die Frist zurück. **Achtung Flash-Verschleiß:** manche
+  Adapter und Wechselrichter schreiben jede empfangene Grenze dauerhaft in
+  ihren Speicher — dort den Abstand groß wählen oder auf 0 stellen und am
+  Gerät eine eigene Rückfallgrenze einstellen. Bestehende Einstellungen
+  bekommen die 300 s beim nächsten Dienststart eingetragen. Der
+  Speicher-Sollwert wird nicht aufgefrischt.
+- **`stellerN/ok`, `speicherok` und `ersatz` gehen nicht mehr retained
+  hinaus.** Das sind Aussagen des Dienstes über sich selbst — ob der eigene
+  Stellaufruf abgesetzt werden konnte und ob er den Hauptzähler für
+  ausgefallen hält. Zurückbehalten stünde „in Ordnung" auch dann noch da,
+  wenn der Dienst längst tot ist (Hausstandard, Entscheidung vom 19.09.2026).
+  Der alte zurückbehaltene Wert wird beim Dienststart abgeräumt, wie die
+  übrigen nicht mehr retained gesendeten Themen. Gerätezustände (`tat`,
+  `ein`, `ziel`, `notfall`, `anlass`, `wirkung` …) bleiben retained.
 
 ## Neu in 0.9.20
 

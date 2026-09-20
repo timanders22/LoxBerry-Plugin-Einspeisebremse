@@ -203,6 +203,39 @@ function eb_test_mqtt()
     $o[] = eb_klartext('TEST.MQ_THEMEN');
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
     foreach (eb_mqtt_themen() as $k => $unbenutzt) { $o[] = '  ' . $praefix . '/' . $k; }
+
+    /* Stellbefehle ueber MQTT gehen ohne Retain hinaus; ein alter
+     * zurueckbehaltener Wert wird beim ersten Stellen einmal abgeraeumt
+     * (bin/eb_dienst.php, eb_stell_mqtt()). Auch hier wird nichts gestellt
+     * und nichts abgeraeumt - der Reiter zeigt, was der Merker weiss, und
+     * wie man selbst nachsieht, wo die Bremse es nicht kann. */
+    $o[] = '';
+    $o[] = eb_klartext('TEST.MQ_STELL_KOPF');
+    $eb_stell = array();
+    foreach (eb_steller() as $s) { if ($s['art'] === 'mqtt') { $eb_stell[] = $s; } }
+    $sp = eb_speicher_steller();
+    if ($sp && $sp['art'] === 'mqtt') { $eb_stell[] = $sp; }
+    if (!$eb_stell) { $o[] = '  ' . eb_klartext('TEST.MQ_STELL_KEINER'); }
+    $merker = eb_stell_merker_lesen();
+    $texte = array('leer' => 'TEST.MQ_STELL_LEER', 'geraeumt' => 'TEST.MQ_STELL_GERAEUMT',
+                   'wieder_da' => 'TEST.MQ_STELL_WIEDER_DA');
+    foreach ($eb_stell as $s) {
+        $thema = (string) $s['adresse'];
+        $lage = array();
+        if (strpos($thema, '{') !== false) {
+            $lage[] = eb_klartext('TEST.MQ_STELL_PLATZHALTER');
+        } else {
+            foreach ($merker as $e) {
+                if (!isset($e['thema']) || $e['thema'] !== $thema) { continue; }
+                $lage[] = eb_klartext($texte[$e['ergebnis']])
+                        . (isset($e['broker']) ? ', ' . $e['broker'] : '')
+                        . (isset($e['um']) ? ', ' . $e['um'] : '');
+            }
+            if (!$lage) { $lage[] = eb_klartext('TEST.MQ_STELL_OFFEN'); }
+        }
+        $o[] = sprintf('  %s: %s — %s', $s['name'], $thema, implode('; ', $lage));
+    }
+    $o[] = eb_klartext('TEST.MQ_STELL_SELBST');
     $o[] = '';
     $o[] = sprintf(eb_klartext('TEST.MQ_SAEUBERUNG'),
         eb_mqtt_wert_saeubern("Zeile eins\nZeile zwei\tmit Tabulator"));

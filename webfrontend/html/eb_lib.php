@@ -126,6 +126,12 @@ function eb_steller_vorgabe()
          * Update ihre Stellglieder. */
         'name' => '', 'stilllegen' => 0, 'art' => 'aus', 'adresse' => '',
         'inhalt' => '', 'einheit' => 'W', 'spitze_w' => 0, 'anteil' => 0,
+        /* Abstand in Sekunden, in dem ein MQTT-Stellglied seine Grenze
+         * erneut bekommt, solange gedrosselt wird (bin/eb_dienst.php, Block
+         * "MQTT-Stellglieder auffrischen"). 0 = aus. Der Stellbefehl geht
+         * ohne Retain hinaus; ein Geraet, das neu startet oder sich neu
+         * verbindet, bekaeme ihn sonst erst bei der naechsten Aenderung. */
+        'auffrisch_s' => 300,
     );
 }
 
@@ -405,6 +411,11 @@ function eb_config($erzeugen = true)
         unset($s['aktiv']);
         $s['spitze_w'] = max(0, min(1000000, (int) eb_zahl($s['spitze_w'], 0)));
         $s['anteil'] = max(0, min(100, (int) eb_zahl($s['anteil'], 0)));
+        /* 1 bis 9 Sekunden werden 10: manche Adapter schreiben jede Grenze
+         * in ihren Flash, und ein Takt von wenigen Sekunden verbraucht ihn
+         * in Wochen. */
+        $a = max(0, min(86400, (int) eb_zahl($s['auffrisch_s'], 300)));
+        $s['auffrisch_s'] = ($a > 0 && $a < 10) ? 10 : $a;
         $cfg['steller'][$i] = $s;
     }
 
@@ -487,6 +498,17 @@ function eb_config_vervollstaendigen()
     $daten = $roh === '' ? null : json_decode($roh, true);
     if (!is_array($daten) || !array_key_exists('aktionstoken', $daten)) { return array(); }
     $fehlt = array_keys(array_diff_key(eb_vorgaben(), $daten));
+    /* Auch die Felder INNERHALB eines Stellglieds: ein neues Feld (so
+     * auffrisch_s) fehlte sonst in jeder bestehenden Datei, und nur
+     * eb_config() wuesste die Vorgabe. */
+    if (isset($daten['steller']) && is_array($daten['steller'])) {
+        foreach ($daten['steller'] as $i => $st) {
+            if (!is_array($st)) { continue; }
+            foreach (array_keys(array_diff_key(eb_steller_vorgabe(), $st)) as $uk) {
+                $fehlt[] = 'steller[' . $i . '].' . $uk;
+            }
+        }
+    }
     if (!$fehlt) { return array(); }
     if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
     $fp = @fopen($p['datadir'] . '/config.lock', 'c+');
@@ -1276,9 +1298,64 @@ function eb_mqtt_retained($k)
     if (in_array($k, $fluechtig, true)) { return false; }
     /* Das Lebenszeichen nach Regeln/07. */
     if (strpos($k, 'status/') === 0) { return false; }
-    /* stellerN/watt ist ebenfalls ein Messwert, stellerN/ok ein Zustand. */
+    /* stellerN/watt ist ebenfalls ein Messwert. */
     if (preg_match('#^steller([0-9]+|N)/watt$#', $k) === 1) { return false; }
+    /* Aussagen des Dienstes ueber sich selbst sind nie retained
+     * (Entscheidung 19.09.2026, Regeln/07 Abschnitt 3): stellerN/ok und
+     * speicherok sagen, ob der EIGENE Stellaufruf abgesetzt werden konnte;
+     * ersatz, dass der Dienst den Hauptzaehler fuer ausgefallen haelt.
+     * Stirbt der Dienst, bliebe sonst "in Ordnung" stehen. Den Altwert
+     * raeumt eb_mqtt_abraeumen() bei jedem Dienststart ab. */
+    if (in_array($k, array('speicherok', 'ersatz'), true)
+        || preg_match('#^steller([0-9]+|N)/ok$#', $k) === 1) { return false; }
     return true;
+}
+
+/**
+ * Der Merker fuer den Stellbefehl ueber MQTT.
+ *
+ * Der Stellbefehl an ein Geraet geht ohne Retain hinaus, ein stehender
+ * Altwert aus der Zeit davor wird einmal abgeraeumt (bin/eb_dienst.php,
+ * eb_stell_mqtt(); warum und wie vorsichtig: dort). Hier steht, fuer
+ * welchen Broker und welches Thema das erledigt ist. Schluessel
+ * "<host>:<port> <thema>": ein anderes oder geaendertes Thema wird deshalb
+ * erneut nachgesehen. Ergebnis 'leer' (nichts stand da), 'geraeumt' oder
+ * 'wieder_da' (nach dem Abraeumen stand wieder etwas - ein anderer
+ * Absender; kein zweites Mal).
+ *
+ * Eine Datei anderer Form - ohne die Kennung 'art' unten - gilt als nicht
+ * vorhanden. Das ist die sichere Seite: dann wird nur NACHGESEHEN, und
+ * abgeraeumt wird allein, was wirklich dasteht.
+ *
+ * Der Datenordner wird bei jedem Update geloescht (siehe preupgrade.sh);
+ * die Datei steht deshalb in dessen Rettungsliste.
+ */
+function eb_stell_merker_datei() { return eb_paths()['datadir'] . '/retain_stellbefehl.json'; }
+
+function eb_stell_merker_lesen()
+{
+    $d = eb_json_lesen(eb_stell_merker_datei());
+    if (!isset($d['art']) || $d['art'] !== 'eb_stellbefehl_retain'
+        || !isset($d['eintraege']) || !is_array($d['eintraege'])) {
+        return array();
+    }
+    $aus = array();
+    foreach ($d['eintraege'] as $k => $e) {
+        if (is_array($e) && isset($e['ergebnis'])
+            && in_array($e['ergebnis'], array('leer', 'geraeumt', 'wieder_da'), true)) {
+            $aus[(string) $k] = $e;
+        }
+    }
+    return $aus;
+}
+
+function eb_stell_merker_setzen($schluessel, $thema, $broker, $ergebnis)
+{
+    $e = eb_stell_merker_lesen();
+    $e[$schluessel] = array('thema' => $thema, 'broker' => $broker,
+                            'ergebnis' => $ergebnis, 'um' => date('Y-m-d H:i:s'));
+    return eb_json_schreiben(eb_stell_merker_datei(),
+                             array('art' => 'eb_stellbefehl_retain', 'eintraege' => $e));
 }
 
 /**

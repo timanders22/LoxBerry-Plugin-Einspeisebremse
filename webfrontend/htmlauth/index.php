@@ -318,7 +318,8 @@ if ($eb_post && isset($_POST['speichern'])) {
             if (!isset($eb_einh[$s['einheit']])) { $s['einheit'] = 'W'; }
             $bez = eb_t('STELL.STELLER') . ' ' . ($eb_i + 1);
             foreach (array('spitze_w' => array('s_spitze', 0, 1000000),
-                           'anteil' => array('s_anteil', 0, 100)) as $eb_f => $eb_d) {
+                           'anteil' => array('s_anteil', 0, 100),
+                           'auffrisch_s' => array('s_auffrisch', 0, 86400)) as $eb_f => $eb_d) {
                 $w = $eb_zahl_pruef($eb_reihe($eb_d[0], $eb_i), $eb_d[1], $eb_d[2],
                                     $bez . ' / ' . eb_t('STELL.L_' . strtoupper($eb_f)));
                 if ($w !== null) { $s[$eb_f] = $w; }
@@ -899,6 +900,8 @@ if ($eb_rahmen) {
     <input data-role="none" type="text" size="70" name="s_adresse[<?= $eb_i ?>]" value="<?= eb_e($s['adresse']) ?>"></label></td>
   <td colspan="2"><label><?= eb_e(eb_t('STELL.L_INHALT')) ?><br>
     <input data-role="none" type="text" size="34" name="s_inhalt[<?= $eb_i ?>]" value="<?= eb_e($s['inhalt']) ?>"></label></td>
+  <td><label><?= eb_e(eb_t('STELL.L_AUFFRISCH_S')) ?><br>
+    <input data-role="none" type="text" size="6" name="s_auffrisch[<?= $eb_i ?>]" value="<?= (int) $s['auffrisch_s'] ?>"></label></td>
 </tr>
 </table>
 </div>
@@ -906,6 +909,7 @@ if ($eb_rahmen) {
 <p class="sm-hilfe"><?= eb_t('STELL.HILFE') ?></p>
 <p class="sm-hilfe"><?= eb_t('STELL.SUNSPEC_HILFE') ?></p>
 <p class="sm-hilfe"><?= eb_t('STELL.STILL_HILFE') ?></p>
+<p class="sm-hilfe"><?= eb_t('STELL.AUFFRISCH_HILFE') ?></p>
 
 <h2><?= eb_e(eb_t('EINST.H_SPEICHER_STELLER')) ?></h2>
 <div class="sm-step"><?= eb_t('EINST.SPEICHER_STELLER_ERKLAERUNG') ?></div>

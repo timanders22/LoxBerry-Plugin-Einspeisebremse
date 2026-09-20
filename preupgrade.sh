@@ -56,10 +56,14 @@ echo "<OK> preupgrade abgeschlossen."
 # im Upgrade-Zweig (:886), und ihr Rumpf loescht ohne Bedingung (:1631).
 # Deshalb NEBEN den Ordner: "rm -rf .../<x>/" trifft den Nachbarn mit dem
 # Punkt nicht. postinstall.sh holt ihn zurueck und raeumt ihn weg.
+# Dazu der Merker retain_stellbefehl.json: fuer welches Stellthema ein
+# alter zurueckbehaltener Stellwert schon abgeraeumt oder nicht vorhanden
+# war (eb_lib.php, eb_stell_merker_lesen()). Ginge er verloren, saehe der
+# Dienst nur erneut nach - abgeraeumt wird nur, was wirklich dasteht.
 LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 mkdir -p "$LANG_SICHER" 2>/dev/null
 chmod 0700 "$LANG_SICHER" 2>/dev/null
-for LANG_F in verlauf.json bilanz.json; do
+for LANG_F in verlauf.json bilanz.json retain_stellbefehl.json; do
     [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
         && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
 done

@@ -605,7 +605,7 @@ function eb_mqtt_veroeffentlichen($thema, $wert, $retained = true)
     $b = eb_broker();
     $argv = array('mosquitto_pub', '-h', $b['host'], '-p', (string) $b['port'], '-t', $thema);
     /* null heisst: leere Nutzlast. Mit Retain LOESCHT sie das Thema im
-     * Broker - nur eb_mqtt_abraeumen() ruft so. */
+     * Broker - nur eb_mqtt_abraeumen() und eb_stell_mqtt() rufen so. */
     if ($wert === null) { $argv[] = '-n'; }
     else { $argv[] = '-m'; $argv[] = eb_mqtt_wert_saeubern_d($wert); }
     if ($retained) { $argv[] = '-r'; }
@@ -614,6 +614,157 @@ function eb_mqtt_veroeffentlichen($thema, $wert, $retained = true)
     $befehl = implode(' ', array_map('escapeshellarg', $argv)) . ' 2>/dev/null';
     @exec($befehl, $aus, $rc);
     return $rc === 0;
+}
+
+/* ==================================================================
+ * Der Stellbefehl ueber MQTT geht OHNE Retain hinaus
+ *
+ * Bis 0.9.20 rief eb_stellen() eb_mqtt_veroeffentlichen() ohne dritten
+ * Parameter, also mit $retained = true. Ein zurueckbehaltener Stellwert
+ * wird bei jeder Neuverbindung des Geraets oder eines weiteren Abnehmers
+ * erneut zugestellt - auch Stunden spaeter, wenn er nicht mehr gilt.
+ * Entscheidung des Hausherrn vom 19.09.2026 (Regeln/07, Abschnitt 3):
+ * fluechtig, und ein stehender Altwert wird EINMAL abgeraeumt.
+ *
+ * Das Abraeumen ist selbst ein Stelleingriff. Eine leere Nutzlast mit
+ * Retain loescht das Thema im Broker, wird nach MQTT 3.1.1, Abschnitt 3.3.1.3,
+ * aber auch jedem zugestellt, der gerade zuhoert - dem Geraet. Liest dessen
+ * Adapter "leer" als 0, steht es fuer einen Augenblick auf 0 W bzw. 0 %.
+ * Diese Zustellung laesst sich in keiner Reihenfolge vermeiden; deshalb:
+ *   - abgeraeumt wird nur, wenn am Thema WIRKLICH ein zurueckbehaltener
+ *     Wert steht - nachgesehen am Retain-Kennzeichen des ersten Pakets,
+ *     das der Broker beim Abonnieren schickt;
+ *   - im selben Zug geht der gueltige Wert hinterher, die leere Nachricht
+ *     gilt hoechstens bis zum naechsten Paket (gemessen in WSL an einem
+ *     eigenen Broker, nicht am Geraet: Pruefung-Einspeisebremse-0.9.21,
+ *     Fall F2);
+ *   - laesst sich nicht feststellen, ob etwas dasteht, wird NICHTS
+ *     abgeraeumt; der Reiter Test (MQTT) sagt, wie man es selbst tut;
+ *   - einmal je Broker und Thema (Merker, eb_stell_merker_lesen()).
+ * ================================================================== */
+
+/**
+ * Steht auf $thema ein zurueckbehaltener Wert? 'da', 'leer' oder
+ * 'unbekannt'.
+ *
+ * mosquitto_sub -C 1 -W 2 -F %r: der Broker schickt einen stehenden Wert
+ * sofort nach dem Abonnieren, mit Retain-Kennzeichen 1. Kommt in der Frist
+ * nichts, endet mosquitto_sub 2.x mit 27 (MOSQ_ERR_TIMEOUT; die Frist
+ * beginnt erst nach dem Verbinden) - dann steht dort nichts. Jede andere
+ * Rueckgabe heisst: nicht feststellbar.
+ *
+ * Als Argumentliste und mit eigener Frist: ein Broker, der die Verbindung
+ * annimmt und nie antwortet, haelt mosquitto_sub fest, bevor -W zu zaehlen
+ * beginnt - und dieser Aufruf steht mitten im Regeldurchlauf.
+ */
+function eb_stell_altlast_lesen($thema, $b)
+{
+    if ($thema === '' || strpbrk($thema, '+#') !== false) { return 'unbekannt'; }
+    $argv = array('mosquitto_sub', '-h', $b['host'], '-p', (string) $b['port'],
+                  '-t', $thema, '-C', '1', '-W', '2', '-F', '%r');
+    if ($b['user'] !== '') { $argv[] = '-u'; $argv[] = $b['user']; }
+    if ($b['pass'] !== '') { $argv[] = '-P'; $argv[] = $b['pass']; }
+    $rohre = array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'),
+                   2 => array('file', '/dev/null', 'a'));
+    $ph = @proc_open($argv, $rohre, $pipes);
+    if (!is_resource($ph)) { return 'unbekannt'; }
+    stream_set_blocking($pipes[1], false);
+    $aus = '';
+    $rc = null;
+    $frist = microtime(true) + 6.0;
+    while (true) {
+        $aus .= (string) @stream_get_contents($pipes[1]);
+        $st = @proc_get_status($ph);
+        if (!is_array($st) || empty($st['running'])) {
+            $rc = is_array($st) ? (int) $st['exitcode'] : null;
+            break;
+        }
+        if (microtime(true) >= $frist) { @proc_terminate($ph, 9); break; }
+        usleep(20000);
+    }
+    $aus .= (string) @stream_get_contents($pipes[1]);
+    @fclose($pipes[1]);
+    @proc_close($ph);
+    $aus = trim($aus);
+    if ($rc === 0 && substr($aus, 0, 1) === '1') { return 'da'; }
+    if ($rc === 0 && substr($aus, 0, 1) === '0') { return 'leer'; }
+    if ($rc === 27 && $aus === '') { return 'leer'; }
+    return 'unbekannt';
+}
+
+/**
+ * Muss vor diesem Stellwert ein Altwert weg? Rueckgabe 'da' oder ''.
+ * Wird je Broker und Thema nur einmal im Prozess gefragt.
+ */
+function eb_stell_altlast_klaeren($s, $thema, $b, $schluessel)
+{
+    /* Mit Platzhalter im Thema wechselt das Thema mit dem Wert; frueher
+     * gesendete Werte liegen dann auf Themen, die hier niemand kennt. */
+    if (strpos((string) $s['adresse'], '{') !== false) {
+        eb_log('MQTT: das Stellthema von ' . $s['name'] . ' enthaelt einen Platzhalter und wechselt '
+             . 'mit dem Wert. Nach einem alten zurueckbehaltenen Stellwert wird dort nicht gesucht '
+             . '(Reiter Test, MQTT).');
+        return '';
+    }
+    $merker = eb_stell_merker_lesen();
+    if (isset($merker[$schluessel])) { return ''; }
+    $lage = eb_stell_altlast_lesen($thema, $b);
+    if ($lage === 'leer') {
+        eb_stell_merker_setzen($schluessel, $thema, $b['host'] . ':' . $b['port'], 'leer');
+        return '';
+    }
+    if ($lage !== 'da') {
+        eb_log('MQTT: ob auf ' . $thema . ' noch ein zurueckbehaltener Stellwert steht, liess sich '
+             . 'nicht feststellen. Es wird nichts abgeraeumt; beim naechsten Dienststart wird wieder '
+             . 'nachgesehen (Reiter Test, MQTT).');
+        return '';
+    }
+    return 'da';
+}
+
+/** Einen Stellwert ueber MQTT senden - ohne Retain. Rueckgabe: angekommen beim Broker? */
+function eb_stell_mqtt($s, $thema, $wert)
+{
+    static $gefragt = array();
+    $b = eb_broker();
+    $schluessel = $b['host'] . ':' . $b['port'] . ' ' . $thema;
+    $raeumen = false;
+    if (!isset($gefragt[$schluessel])) {
+        $gefragt[$schluessel] = 1;
+        $raeumen = (eb_stell_altlast_klaeren($s, $thema, $b, $schluessel) === 'da');
+    }
+    /* Leere Nutzlast mit Retain, und der gueltige Wert unmittelbar
+     * hinterher - dazwischen steht nichts, auch kein Protokolleintrag. */
+    $geloescht = $raeumen ? eb_mqtt_veroeffentlichen($thema, null, true) : false;
+    $ok = eb_mqtt_veroeffentlichen($thema, $wert, false);
+    if (!$raeumen) { return $ok; }
+
+    if (!$geloescht) {
+        eb_log('MQTT: der alte zurueckbehaltene Stellwert auf ' . $thema . ' liess sich nicht '
+             . 'abraeumen. Beim naechsten Dienststart wird wieder nachgesehen.');
+        return $ok;
+    }
+    /* Nicht dem Rueckgabewert glauben, sondern nachsehen (Regeln/07: ein
+     * Merker auf den Sendeerfolg hat schon zweimal gelogen). */
+    $nach = eb_stell_altlast_lesen($thema, $b);
+    $broker = $b['host'] . ':' . $b['port'];
+    if ($nach === 'leer') {
+        eb_stell_merker_setzen($schluessel, $thema, $broker, 'geraeumt');
+        eb_log('MQTT: alter zurueckbehaltener Stellwert auf ' . $thema . ' einmal abgeraeumt; der '
+             . 'gueltige Wert ging unmittelbar danach ohne Retain hinaus'
+             . ($ok ? '.' : ' - und kam NICHT an.'));
+    } elseif ($nach === 'da') {
+        /* Die Bremse sendet hier nie mehr mit Retain (oben) - was jetzt
+         * dasteht, setzt ein anderer Absender. Ein zweites Abraeumen
+         * braechte dem Geraet nur eine zweite leere Nachricht. */
+        eb_stell_merker_setzen($schluessel, $thema, $broker, 'wieder_da');
+        eb_log('MQTT: auf ' . $thema . ' steht nach dem Abraeumen wieder ein zurueckbehaltener Wert. '
+             . 'Den setzt ein anderer Absender; die Bremse raeumt ihn nicht noch einmal ab.');
+    } else {
+        eb_log('MQTT: ob der alte Stellwert auf ' . $thema . ' abgeraeumt ist, liess sich nicht '
+             . 'nachpruefen. Beim naechsten Dienststart wird wieder nachgesehen.');
+    }
+    return $ok;
 }
 
 /**
@@ -638,8 +789,9 @@ function eb_stellen($s, $watt)
     if ($adresse === '') { return array(0, 'keine Adresse'); }
 
     if ($s['art'] === 'mqtt') {
-        $ok = eb_mqtt_veroeffentlichen($adresse, $inhalt !== '' ? $inhalt : $ers['{W}']);
-        return array($ok ? 1 : 0, 'mqtt ' . $adresse . ' = ' . ($inhalt !== '' ? $inhalt : $ers['{W}']));
+        $wert = $inhalt !== '' ? $inhalt : $ers['{W}'];
+        $ok = eb_stell_mqtt($s, $adresse, $wert);
+        return array($ok ? 1 : 0, 'mqtt ' . $adresse . ' = ' . $wert);
     }
     if ($s['art'] === 'http_get') {
         $st = 0;
@@ -803,6 +955,8 @@ function eb_durchlauf($cfg, $stand)
         'sp_was'        => isset($stand['sp_was']) ? $stand['sp_was'] : '',
         'gestellt_um'   => isset($stand['gestellt_um']) ? $stand['gestellt_um'] : 0,
         'auffrisch_um'  => isset($stand['auffrisch_um']) ? (float) $stand['auffrisch_um'] : 0.0,
+        'mqtt_auffrisch' => (isset($stand['mqtt_auffrisch']) && is_array($stand['mqtt_auffrisch']))
+                            ? $stand['mqtt_auffrisch'] : array(),
         'netz_vorher'   => isset($stand['netz_vorher']) ? $stand['netz_vorher'] : null,
         'grenze_vorher' => isset($stand['grenze_vorher']) ? $stand['grenze_vorher'] : null,
         'frei_versuch'  => isset($stand['frei_versuch']) ? (int) $stand['frei_versuch'] : 0,
@@ -973,6 +1127,48 @@ function eb_durchlauf($cfg, $stand)
             }
             if ($etwas) { $neu['auffrisch_um'] = $jetzt; }
         }
+    }
+
+    /* ---- MQTT-Stellglieder auffrischen ----
+     * Der Stellbefehl ueber MQTT geht ohne Retain hinaus (eb_stell_mqtt()).
+     * Ein Geraet oder Adapter, der neu startet oder die Verbindung verliert,
+     * bekaeme die Grenze sonst erst bei der naechsten Aenderung - bei
+     * stehender Grenze womoeglich stundenlang nicht, und er speiste
+     * waehrenddessen ungebremst ein. Deshalb geht sie je Stellglied im
+     * eingestellten Abstand erneut hinaus (auffrisch_s, 0 = aus), mit
+     * eigener Frist je Stellglied; jede Aenderung setzt die Frist zurueck.
+     *
+     * Nur solange gedrosselt wird. Mit Spitzenleistung wie bei SunSpec:
+     * liegt der Anteil auf oder ueber ihr, gibt es nichts zu halten. OHNE
+     * Spitzenleistung ist das nicht zu entscheiden; dann wird aufgefrischt,
+     * solange die Gesamtgrenze unter dem Freigabewert (frei_w) liegt - ein
+     * Irrtum in diese Richtung kostet ein Paket, einer in die andere liesse
+     * ein neu gestartetes Geraet ohne Grenze einspeisen.
+     *
+     * Derselbe Sendeweg wie jedes Stellen: das einmalige Abraeumen eines
+     * alten zurueckbehaltenen Werts haengt an Merker und Prozess-Merker in
+     * eb_stell_mqtt() und wird hier nicht erneut ausgeloest. */
+    $mq_alt = $neu['mqtt_auffrisch'];
+    $mq_anteile = null;
+    $neu['mqtt_auffrisch'] = array();
+    foreach ($steller as $nr => $s) {
+        if ($s['art'] !== 'mqtt') { continue; }
+        $k = (string) $nr;
+        $um = isset($mq_alt[$k]) ? (float) $mq_alt[$k] : 0.0;
+        $abstand = (int) $s['auffrisch_s'];
+        if ($aendert) { $neu['mqtt_auffrisch'][$k] = $jetzt; continue; }
+        $neu['mqtt_auffrisch'][$k] = $um;
+        if ($abstand <= 0 || ($jetzt - $um) < $abstand) { continue; }
+        if ($mq_anteile === null) { $mq_anteile = eb_aufteilen($r['drossel_w'], $steller); }
+        $watt = isset($mq_anteile[$nr]) ? $mq_anteile[$nr] : 0.0;
+        $spitze = (float) $s['spitze_w'];
+        $frei = $spitze > 0.0 ? ($watt >= $spitze)
+                              : ((float) $r['drossel_w'] >= (float) $cfg['frei_w']);
+        if ($frei) { continue; }
+        list($ok, $was) = eb_stellen($s, $watt);
+        $neu['steller'][$k] = array('name' => $s['name'], 'watt' => $watt, 'ok' => $ok, 'was' => $was);
+        $neu['mqtt_auffrisch'][$k] = $jetzt;
+        if (!$ok) { eb_log('Auffrischen ' . $s['name'] . ': ' . $was); }
     }
 
     /* ---- Der Speicher bekommt seinen Sollwert ----
