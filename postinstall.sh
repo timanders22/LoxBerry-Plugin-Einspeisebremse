@@ -216,6 +216,22 @@ fi
 # Die Marke VOR dem Start entfernen - sonst verweigert dienst.sh ihn.
 rm -f "$SPERRE" 2>/dev/null
 
+# ---------- Ist die Bremse eingerichtet? ----------
+# Dieses Skript laeuft auch bei jedem Upgrade (siehe Kopf). Bis 0.9.23
+# meldete es danach "Die Regelung selbst ist noch AUS" und die
+# Erstanleitung - auch wenn die Konfiguration mit eingeschalteter Regelung
+# eben zurueckgespielt war (gemessen 24.09.2026 in WSL,
+# Pruefung-Einspeisebremse-0.9.24, Fall b). Entschieden wird nach dem
+# INHALT, nicht nach der Upgrade-Marke: gueltiges JSON mit dem Schluessel
+# aktionstoken - dasselbe Merkmal, mit dem eb_config() in
+# webfrontend/html/eb_lib.php Konfiguration und Zweitschrift als heil
+# erkennt. "{}" oder eine unlesbare Datei heisst: nicht eingerichtet, also
+# Erstinstallation oder gescheiterte Rueckholung. PHP ist hier sicher da
+# (Pruefung weiter oben).
+EB_LAGE=$(php -r '$d = json_decode(trim((string) @file_get_contents($argv[1])), true);
+if (!is_array($d) || !array_key_exists("aktionstoken", $d)) { echo "neu"; exit(0); }
+echo empty($d["ein"]) ? "aus" : "ein";' -- "$CF" 2>/dev/null)
+
 # ---------- Dienst starten ----------
 # Der Dienst misst und zeigt an. GESTELLT wird erst, wenn der Mensch die
 # Regelung in der Oberflaeche einschaltet - eine frisch installierte Bremse
@@ -224,19 +240,28 @@ if [ -x "$PBIN/dienst.sh" ]; then
     "$PBIN/dienst.sh" restart >/dev/null 2>&1
     sleep 1
     if "$PBIN/dienst.sh" status >/dev/null 2>&1; then
-        echo "<OK> Der Dienst laeuft. Die Regelung selbst ist noch AUS."
+        case "$EB_LAGE" in
+            ein) echo "<OK> Der Dienst laeuft. Die Regelung ist eingeschaltet (Einstellung uebernommen)." ;;
+            aus) echo "<OK> Der Dienst laeuft. Die Regelung ist ausgeschaltet (Einstellung uebernommen)." ;;
+            *)   echo "<OK> Der Dienst laeuft. Die Regelung selbst ist noch AUS." ;;
+        esac
     else
         echo "<INFO> Der Dienst konnte noch nicht gestartet werden."
         echo "<INFO> Der Minutentakt startet ihn beim naechsten Durchlauf erneut."
     fi
 fi
 
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche:"
-echo "<INFO>  1. Reiter Einstellungen: Netzzaehler eintragen - Vorzeichen beachten,"
-echo "<INFO>     plus = Bezug, minus = Einspeisung."
-echo "<INFO>  2. Stellglieder eintragen, mit Platzhalter {W}, {KW} oder {PROZENT}."
-echo "<INFO>  3. Reiter Test: 'Messwerte lesen' und 'Trockenlauf' - dort steht,"
-echo "<INFO>     was die Regelung taete und welche Befehle hinausgingen."
-echo "<INFO>  4. Erst wenn das stimmt: Regelung einschalten."
+# Die Erstanleitung nur ohne eingerichtete Konfiguration (EB_LAGE, oben).
+if [ "$EB_LAGE" = "ein" ] || [ "$EB_LAGE" = "aus" ]; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche:"
+    echo "<INFO>  1. Reiter Einstellungen: Netzzaehler eintragen - Vorzeichen beachten,"
+    echo "<INFO>     plus = Bezug, minus = Einspeisung."
+    echo "<INFO>  2. Stellglieder eintragen, mit Platzhalter {W}, {KW} oder {PROZENT}."
+    echo "<INFO>  3. Reiter Test: 'Messwerte lesen' und 'Trockenlauf' - dort steht,"
+    echo "<INFO>     was die Regelung taete und welche Befehle hinausgingen."
+    echo "<INFO>  4. Erst wenn das stimmt: Regelung einschalten."
+fi
 exit 0

@@ -3,9 +3,20 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.24
+
+Nach einem Update meldet die Installation nicht mehr „Die Regelung selbst ist
+noch AUS“ samt Erstanleitung: ist die Konfiguration nach dem Zurückspielen
+heil (gültiges JSON mit `aktionstoken`, dasselbe Merkmal wie `eb_config()`),
+steht dort der übernommene Zustand der Regelung und
+`<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen.`; die
+„Nächsten Schritte“ erscheinen nur bei der Erstinstallation oder wenn die
+Rückholung gescheitert ist (gemessen in WSL,
+`Pruefung-Einspeisebremse-0.9.24/postinstall_hinweis.md`).
 
 ## Neu in 0.9.23
 
