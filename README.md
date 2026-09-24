@@ -3,9 +3,17 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.25 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.25
+
+Eine Zweitschrift ohne Einstellungen (kein `aktionstoken`, etwa `{}`) wird bei
+der Installation nicht mehr kopiert und als „Konfiguration aus Sicherung
+wiederhergestellt“ gemeldet, sondern mit „Sicherung ohne Einstellungen - nichts
+zurueckgespielt“; eine vorhandene gute Konfiguration wird wie bisher nie
+überschrieben (gemessen in WSL, `Pruefung-Einspeisebremse-0.9.25/postinstall_hinweis.md`).
 
 ## Neu in 0.9.24
 

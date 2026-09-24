@@ -72,10 +72,31 @@ chmod 600 "$PCONFIG/einspeisebremse.json" 2>/dev/null
 # Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/einspeisebremse.json"
+# Zurueckgespielt wird nur eine Zweitschrift MIT Inhalt, und nur ueber eine
+# leere Datei (eine gute wird nie ueberschrieben). Bis 0.9.24 wurde auch eine
+# Zweitschrift "{}" kopiert und als "wiederhergestellt" gemeldet - eine
+# Erfolgsmeldung ueber nichts (gemessen 24.09.2026 in WSL,
+# Pruefung-Einspeisebremse-0.9.25, Fall c). Inhalt heisst dasselbe wie $heil
+# in eb_config() (webfrontend/html/eb_lib.php): gueltiges JSON mit dem
+# Schluessel aktionstoken. PHP wird erst weiter unten verlangt - fehlt es
+# hier, wird wie bisher kopiert (Rueckgabe 2).
+eb_heil() {   # 0 = Inhalt, 1 = keiner, 2 = nicht pruefbar
+    command -v php >/dev/null 2>&1 || return 2
+    php -r '$d = json_decode(trim((string) @file_get_contents($argv[1])), true);
+exit(is_array($d) && array_key_exists("aktionstoken", $d) ? 0 : 1);' -- "$1" >/dev/null 2>&1
+    eb_rc=$?
+    [ "$eb_rc" = 0 ] || [ "$eb_rc" = 1 ] || return 2
+    return "$eb_rc"
+}
 if [ -f "$BK" ]; then
     INHALT=$(cat "$CF" 2>/dev/null)
     if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-        cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+        eb_heil "$BK"
+        if [ "$?" = 1 ]; then
+            echo "<INFO> Sicherung ohne Einstellungen - nichts zurueckgespielt."
+        else
+            cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+        fi
     fi
 fi
 
