@@ -3,9 +3,78 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.21 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.22
+
+In WSL gemessen (Prüfstand `Pruefung-Einspeisebremse-0.9.22`, 58 Fälle, 101
+Prüfzeilen, alle grün; jede Korrektur einzeln zurückgebaut und geeicht),
+nicht am Gerät:
+
+- **`dienst.sh` liest die LoxBerry-Wurzel, statt sie auszurechnen.** Bis
+  0.9.21 galt „drei Ebenen über dem eigenen Ablageort", der Ordnername war
+  fest `einspeisebremse`, und gestartet wurde das `eb_dienst.php` **neben**
+  dem Skript. Ein `start` aus einem Prüfarchiv unter
+  `<LoxBerry-Wurzel>/pruefung/einspeisebremse/bin` startete dadurch den
+  Regler **aus dem Archiv** mit PID-Datei und Konfiguration der Anlage —
+  fremder Code gegen dieselben Wechselrichter. Jetzt: zuerst `$LBHOMEDIR`,
+  sonst aufwärts bis zu einem Ordner mit `config/plugins`, `data/plugins`
+  **und** `config/system/general.json`; findet sich keiner, endet das Skript
+  mit `FEHLER` (`status` mit 4), ohne etwas anzulegen, zu starten oder
+  anzuhalten. Es gibt keinen Rückfall auf feste Ebenen und keinen festen
+  Pfad. Der Ordnername kommt aus dem Ablageort (eine Zweitinstallation heißt
+  `einspeisebremse01`).
+- **Aus einem ausgepackten Archiv wird nichts gestartet oder angehalten.**
+  `start`, `stop` und `restart` laufen nur aus
+  `<LoxBerry-Wurzel>/bin/plugins/<ordner>`; `status` gibt von dort aus
+  Auskunft über den Dienst der Anlage. Bis 0.9.21 startete ein `restart`
+  aus dem Archiv einen zweiten Dienst neben dem laufenden.
+- **Ordner werden erst beim Start angelegt, nach der Prüfung der
+  Upgrade-Marke** — nicht mehr bei jedem Aufruf. Bis 0.9.21 legte in der
+  Upgrade-Lücke schon ein `status` den eben geleerten Datenordner wieder an.
+- **Der Dienst wird argumentweise erkannt**: `php` mit genau dem Dienstskript
+  der Anlage als einzigem Argument. Bis 0.9.21 galt jeder Prozess unter der
+  Nummer der PID-Datei, dessen Befehlszeile auf `eb_dienst.php` endete — ein
+  `tail -f …/eb_dienst.php` wurde als Dienst gemeldet und von `stop`
+  beendet, und `start` startete keinen.
+- **Die Upgrade-Marke gilt höchstens 300 s aus der Zukunft** (bis 0.9.21
+  unbegrenzt), Markeninhalt und Uhr werden als Zahl geprüft, bevor gerechnet
+  wird; ohne lesbare Uhr wird nicht gestartet. Bis 0.9.21 ging die Ausgabe
+  von `date` ungeprüft in die Rechnung — eine Ausgabe der Form
+  `a[$(befehl)]` führte den Befehl aus (gemessen mit einem untergeschobenen
+  `date`).
+- **Hakenskripte und Deinstallation** (`preupgrade.sh`, `postinstall.sh`,
+  `postupgrade.sh`, `uninstall/uninstall`): ohne fünftes Argument und ohne
+  `$LBHOMEDIR` dieselbe Suche mit `general.json` statt „zwei bzw. drei Ebenen
+  über dem Ablageort"; ohne Wurzel `<WARNING>`/`<FAIL>`, nichts getan,
+  Rückgabe 1. Vorher schrieb die Deinstallation in einem fremden Baum
+  dessen Konfiguration um, schickte einen Durchlauf los und löschte Daten.
+  Wie vom Installer aufgerufen (mit Argumenten) ändert sich nichts.
+- **Die Bibliothek** verlangt bei der Wurzelsuche ebenfalls
+  `config/system/general.json` und nimmt `$LBHOMEDIR` nur, wenn darunter
+  `config/plugins` liegt. `eb_dienst.php` lädt die Bibliothek des **eigenen**
+  Ordners; bis 0.9.21 lud eine Zweitinstallation die der ersten.
+- **Ein ausgepacktes Archiv bleibt bei sich.** Liegt die Bibliothek nicht in
+  `<LoxBerry-Wurzel>/webfrontend/html/plugins/<ordner>`, arbeitet sie
+  ausschließlich im eigenen Ordner (Konfiguration, Daten, Protokoll) — es sei
+  denn, der Aufrufer nennt `LBHOMEDIR` **und** `LBPPLUGINDIR` ausdrücklich.
+  Bis 0.9.21 nahm sie unter einer echten Wurzel die Pfade der Anlage.
+- **Ohne LoxBerry-Wurzel gibt es keinen Broker**: der Dienst hört und sendet
+  dann nichts über MQTT und sagt es einmal im Protokoll. Bis 0.9.21 las er
+  `general.json` an der Wurzel des Dateisystems und stellte sonst auf
+  `localhost:1883`.
+- **Sprachdateien** kommen nur aus dem eigenen Ordnernamen (bzw. dem eigenen
+  Archiv); eine Zweitinstallation las bisher die der ersten.
+- **Waisen und PID-Datei argumentweise**: `postinstall.sh` sucht verwaiste
+  Dienste nicht mehr mit `pgrep -f`, und `uninstall` prüft vor `kill -9`
+  dieselben drei Merkmale wie `dienst.sh` (PHP, genau das eigene
+  Dienstskript, kein weiteres Argument) und den Dienstbenutzer. Vorher wurde
+  ein `tail -f` auf die Dienstdatei beendet.
+
+Unverändert: Regelung, MQTT, Retain (`notfall`, `anlass`, `wirkung` bleiben,
+wie sie sind — die Entscheidung dazu steht aus).
 
 ## Neu in 0.9.21
 

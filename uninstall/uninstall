@@ -10,13 +10,52 @@
 # cron/cron.01min ausdruecklich warnt. Stimmte die Rechnung nicht, tat
 # dieses Skript gar nichts und meldete trotzdem "OK": die Anlage blieb
 # gedrosselt zurueck, und niemand wusste warum.
-SELF=$(cd "$(dirname "$0")" && pwd)
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-einspeisebremse}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# ---------- Die Wurzel: GELESEN, nicht gerechnet ----------
+# Bis 0.9.21 fiel dieses Skript ohne fuenftes Argument und ohne $LBHOMEDIR
+# auf "drei Ebenen ueber dem eigenen Ablageort" zurueck - ohne zu pruefen,
+# ob dort ein LoxBerry liegt. In WSL gemessen (24.09.2026,
+# Pruefung-Einspeisebremse-0.9.22, messe_h1.sh, Fall Ha4): in einem
+# fremden Baum ohne general.json schrieb es dessen Konfiguration
+# um (ein=0), schickte einen Durchlauf los und loeschte Daten und
+# Zweitschrift, rc 0.
+# Eine LoxBerry-Wurzel traegt immer config/system/general.json (Regeln/06,
+# Wurzelsuche). Nach der Suche kein Rueckfall auf feste Ebenen und kein
+# fester Pfad.
+eb_wurzel_suchen() {
+    eb_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    eb_i=0
+    while [ -n "$eb_v" ] && [ "$eb_v" != "/" ] && [ "$eb_i" -lt 8 ]; do
+        if [ -d "$eb_v/config/plugins" ] && [ -d "$eb_v/data/plugins" ] \
+           && [ -f "$eb_v/config/system/general.json" ]; then
+            echo "$eb_v"
+            return 0
+        fi
+        eb_v=$(dirname "$eb_v")
+        eb_i=$((eb_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$SELF/../../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(eb_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<FAIL> Einspeisebremse: Das Wurzelverzeichnis des LoxBerry liess sich nicht bestimmen:"
+    echo "<FAIL> weder das fuenfte Argument noch \$LBHOMEDIR noch die Suche oberhalb"
+    echo "<FAIL> des eigenen Ablageorts fuehrten auf config/plugins, data/plugins"
+    echo "<FAIL> und config/system/general.json."
+    echo "<FAIL> Es wurde NICHTS entfernt, und die Anlage wurde NICHT freigegeben."
+    echo "<INFO> Bitte die Grenze am Wechselrichter selbst zuruecksetzen und"
+    echo "<INFO> <LoxBerry-Wurzel>/config/plugins/<ordner>.backup.json von Hand entfernen."
+    exit 1
 fi
 
 # Fail loud statt still: findet dieses Skript sein Plugin nicht, sagt es
@@ -57,10 +96,24 @@ if [ -f "$PID" ]; then
     # hoher Wahrscheinlichkeit neu vergeben, und ein blindes kill -9
     # traefe einen beliebigen fremden Prozess. Das "|| true" darunter
     # sorgte dafuer, dass es niemand merkte.
+    # Argumentweise wie laeuft() in bin/dienst.sh: argv[0] ein PHP, argv[1]
+    # zeichengenau das Dienstskript dieser Installation, kein drittes
+    # Argument, Besitzer der Dienstbenutzer. Bis 0.9.21 genuegte eine Zeile,
+    # die auf eb_dienst.php endet - ein "tail -f <dienstpfad>" unter der
+    # Nummer der PID-Datei bekam kill -9 (WSL, 24.09.2026,
+    # Pruefung-Einspeisebremse-0.9.22, Fall G3).
+    EB_DIENSTUID=$(id -u loxberry 2>/dev/null || id -u)
+    EB_SKRIPT="$(readlink -f "$BASE/bin/plugins/$PFOLDER" 2>/dev/null || echo "$BASE/bin/plugins/$PFOLDER")/eb_dienst.php"
     P=$(cat "$PID" 2>/dev/null)
+    case "$P" in ''|*[!0-9]*) P="" ;; esac
     if [ -n "$P" ] && [ -r "/proc/$P/cmdline" ] \
-       && tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | grep -q 'eb_dienst\.php$'; then
-        kill -9 "$P" 2>/dev/null || true
+       && [ "$(stat -c %u "/proc/$P" 2>/dev/null)" = "$EB_DIENSTUID" ]; then
+        eb_a=$(tr '\0' '\n' 2>/dev/null < "/proc/$P/cmdline")
+        if [ "$(printf '%s\n' "$eb_a" | sed -n '2p')" = "$EB_SKRIPT" ] \
+           && printf '%s\n' "$eb_a" | sed -n '1p' | grep -qE '(^|/)php[0-9.]*$' \
+           && [ "$(printf '%s\n' "$eb_a" | sed '/^$/d' | wc -l)" -eq 2 ]; then
+            kill -9 "$P" 2>/dev/null || true
+        fi
     fi
     rm -f "$PID"
 fi

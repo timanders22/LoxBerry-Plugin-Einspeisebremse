@@ -16,10 +16,46 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-einspeisebremse}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# ---------- Die Wurzel: GELESEN, nicht gerechnet ----------
+# Bis 0.9.21 fiel dieses Skript ohne fuenftes Argument und ohne $LBHOMEDIR
+# auf "zwei Ebenen ueber dem eigenen Ablageort" zurueck - ohne zu pruefen,
+# ob dort ein LoxBerry liegt. In WSL gemessen (24.09.2026,
+# Pruefung-Einspeisebremse-0.9.22, messe_h1.sh, Fall Ha1): in einem
+# fremden Baum ohne general.json legte es Marke und Sicherung an
+# und hielt dessen Dienst an, rc 0.
+# Eine LoxBerry-Wurzel traegt immer config/system/general.json (Regeln/06,
+# Wurzelsuche). Nach der Suche kein Rueckfall auf feste Ebenen und kein
+# fester Pfad.
+eb_wurzel_suchen() {
+    eb_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    eb_i=0
+    while [ -n "$eb_v" ] && [ "$eb_v" != "/" ] && [ "$eb_i" -lt 8 ]; do
+        if [ -d "$eb_v/config/plugins" ] && [ -d "$eb_v/data/plugins" ] \
+           && [ -f "$eb_v/config/system/general.json" ]; then
+            echo "$eb_v"
+            return 0
+        fi
+        eb_v=$(dirname "$eb_v")
+        eb_i=$((eb_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(eb_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht bestimmen:"
+    echo "<WARNING> weder das fuenfte Argument noch \$LBHOMEDIR noch die Suche oberhalb"
+    echo "<WARNING> des eigenen Ablageorts fuehrten auf config/plugins, data/plugins"
+    echo "<WARNING> und config/system/general.json."
+    echo "<WARNING> Es wurde NICHTS gesichert, keine Marke gelegt und kein Dienst angehalten."
+    exit 1
 fi
 
 # Zuerst die Marke "Aktualisierung laeuft". Der Installer legt die

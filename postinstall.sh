@@ -12,10 +12,46 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-einspeisebremse}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# ---------- Die Wurzel: GELESEN, nicht gerechnet ----------
+# Bis 0.9.21 fiel dieses Skript ohne fuenftes Argument und ohne $LBHOMEDIR
+# auf "zwei Ebenen ueber dem eigenen Ablageort" zurueck - ohne zu pruefen,
+# ob dort ein LoxBerry liegt. In WSL gemessen (24.09.2026,
+# Pruefung-Einspeisebremse-0.9.22, messe_h1.sh, Fall Ha2): in einem
+# fremden Baum ohne general.json legte es Ordner an und startete
+# dort einen Dienst, rc 0.
+# Eine LoxBerry-Wurzel traegt immer config/system/general.json (Regeln/06,
+# Wurzelsuche). Nach der Suche kein Rueckfall auf feste Ebenen und kein
+# fester Pfad.
+eb_wurzel_suchen() {
+    eb_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    eb_i=0
+    while [ -n "$eb_v" ] && [ "$eb_v" != "/" ] && [ "$eb_i" -lt 8 ]; do
+        if [ -d "$eb_v/config/plugins" ] && [ -d "$eb_v/data/plugins" ] \
+           && [ -f "$eb_v/config/system/general.json" ]; then
+            echo "$eb_v"
+            return 0
+        fi
+        eb_v=$(dirname "$eb_v")
+        eb_i=$((eb_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(eb_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<FAIL> Das Wurzelverzeichnis des LoxBerry liess sich nicht bestimmen:"
+    echo "<FAIL> weder das fuenfte Argument noch \$LBHOMEDIR noch die Suche oberhalb"
+    echo "<FAIL> des eigenen Ablageorts fuehrten auf config/plugins, data/plugins"
+    echo "<FAIL> und config/system/general.json."
+    echo "<FAIL> Es wurde nichts eingerichtet und kein Dienst gestartet."
+    exit 1
 fi
 
 PBIN="$BASE/bin/plugins/$PFOLDER"
@@ -118,12 +154,33 @@ if [ -f "$SPERRE" ]; then
     # Ein Dienst, dessen PID-Datei mit dem Datenordner geloescht wurde, ist
     # fuer dienst.sh unsichtbar. Er wuerde neben dem neuen weiterlaufen und
     # seinen Verlauf aus dem Speicher ueber die gerettete Datei schreiben.
-    # Nur die eigene Befehlszeile, nur die eigenen Prozesse.
-    WAISEN=$(pgrep -u "$(id -u)" -f "bin/plugins/$PFOLDER/eb_dienst\.php$" 2>/dev/null)
+    # Argumentweise, wie laeuft() in bin/dienst.sh: argv[0] ein PHP, argv[1]
+    # zeichengenau das Dienstskript dieser Installation, kein drittes
+    # Argument, und der Prozess gehoert dem Dienstbenutzer. Bis 0.9.21 stand
+    # hier "pgrep -f" - das sucht eine Teilzeichenkette in der GANZEN
+    # Befehlszeile und beendete in WSL einen "tail -f <dienstpfad>"
+    # (24.09.2026, Pruefung-Einspeisebremse-0.9.22, Fall G1; Regeln/06).
+    EB_DIENSTUID=$(id -u loxberry 2>/dev/null || id -u)
+    EB_SKRIPT="$(readlink -f "$PBIN" 2>/dev/null || echo "$PBIN")/eb_dienst.php"
+    eb_ist_dienst() {
+        [ -r "/proc/$1/cmdline" ] || return 1
+        [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = "$EB_DIENSTUID" ] || return 1
+        eb_a=$(tr '\0' '\n' 2>/dev/null < "/proc/$1/cmdline")
+        [ "$(printf '%s\n' "$eb_a" | sed -n '2p')" = "$EB_SKRIPT" ] || return 1
+        printf '%s\n' "$eb_a" | sed -n '1p' | grep -qE '(^|/)php[0-9.]*$' || return 1
+        [ "$(printf '%s\n' "$eb_a" | sed '/^$/d' | wc -l)" -eq 2 ] || return 1
+        return 0
+    }
+    WAISEN=""
+    for eb_d in /proc/[0-9]*; do
+        eb_ist_dienst "${eb_d#/proc/}" && WAISEN="$WAISEN ${eb_d#/proc/}"
+    done
     if [ -n "$WAISEN" ]; then
         kill $WAISEN 2>/dev/null
         for i in 1 2 3 4 5 6 7 8 9 10; do
-            pgrep -u "$(id -u)" -f "bin/plugins/$PFOLDER/eb_dienst\.php$" >/dev/null 2>&1 || break
+            eb_rest=""
+            for eb_p in $WAISEN; do eb_ist_dienst "$eb_p" && eb_rest="ja"; done
+            [ -z "$eb_rest" ] && break
             sleep 1
         done
         echo "<INFO> Ein Dienst ohne PID-Datei lief waehrend der Installation und wurde beendet."

@@ -20,7 +20,14 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 $eb_hier = __DIR__;
 $eb_lib = '';
 foreach (array(
-    $eb_hier . '/../../../webfrontend/html/plugins/einspeisebremse/eb_lib.php',
+    /* Der Ordnername aus dem EIGENEN Ablageort, nicht fest: bis 0.9.21 stand
+     * hier .../plugins/einspeisebremse/eb_lib.php. Eine Zweitinstallation
+     * einspeisebremse01 lud damit die Bibliothek der ersten, ein
+     * Pruefarchiv unter <Wurzel>/pruefung/einspeisebremse/bin die der
+     * Anlage - in WSL gemessen (24.09.2026, Pruefung-Einspeisebremse-0.9.22,
+     * Faelle D1, D2). Installiert ist basename(__DIR__) der Ordnername; im
+     * ausgepackten Archiv heisst er "bin", und dort greift die naechste Zeile. */
+    $eb_hier . '/../../../webfrontend/html/plugins/' . basename($eb_hier) . '/eb_lib.php',
     $eb_hier . '/../webfrontend/html/eb_lib.php',
     $eb_hier . '/eb_lib.php',
 ) as $eb_k) {
@@ -59,9 +66,30 @@ $eb_rohr = null;        // Leseende
 $eb_werte = array();    // thema => array(text, zeit)
 $eb_rest = '';
 
+/** Einmal je Prozess sagen, warum MQTT ohne Wurzel aus bleibt. */
+function eb_ohne_broker_melden()
+{
+    static $gesagt = false;
+    if ($gesagt) { return; }
+    $gesagt = true;
+    $t = 'MQTT: kein LoxBerry-Wurzelverzeichnis gefunden (config/system/general.json) - '
+       . 'ohne Wurzel gibt es keinen Broker; es wird ueber MQTT nichts gelesen und nichts gesendet.';
+    eb_log($t);
+    if (PHP_SAPI === 'cli') { fwrite(STDERR, $t . "\n"); }
+}
+
 function eb_broker()
 {
     $p = eb_paths();
+    /* Ohne LoxBerry-Wurzel gibt es keinen Broker: 'host' bleibt leer, und die
+     * Aufrufer senden und hoeren nichts. Bis 0.9.21 wurde hier
+     * '' . '/config/system/general.json' gelesen - also eine Datei an der
+     * Wurzel des Dateisystems - und sonst auf localhost:1883 gestellt; aus
+     * einem ausgepackten Archiv lauschte und sendete der Dienst damit an
+     * einem Broker, den niemand eingetragen hatte (Fall P8). */
+    if ($p['home'] === '') {
+        return array('host' => '', 'port' => 0, 'user' => '', 'pass' => '');
+    }
     $gen = eb_json_lesen($p['home'] . '/config/system/general.json');
     $m = array();
     if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
@@ -103,6 +131,7 @@ function eb_hoerer_starten($cfg)
     if (!$themen) { return true; }          // nichts zu hoeren ist kein Fehler
 
     $b = eb_broker();
+    if ($b['host'] === '') { eb_ohne_broker_melden(); return false; }
     $argv = array('mosquitto_sub', '-h', $b['host'], '-p', (string) $b['port'], '-v', '-q', '1');
     if ($b['user'] !== '') { $argv[] = '-u'; $argv[] = $b['user']; }
     if ($b['pass'] !== '') { $argv[] = '-P'; $argv[] = $b['pass']; }
@@ -603,6 +632,7 @@ function eb_mqtt_wert_saeubern_d($v)
 function eb_mqtt_veroeffentlichen($thema, $wert, $retained = true)
 {
     $b = eb_broker();
+    if ($b['host'] === '') { eb_ohne_broker_melden(); return false; }
     $argv = array('mosquitto_pub', '-h', $b['host'], '-p', (string) $b['port'], '-t', $thema);
     /* null heisst: leere Nutzlast. Mit Retain LOESCHT sie das Thema im
      * Broker - nur eb_mqtt_abraeumen() und eb_stell_mqtt() rufen so. */
@@ -727,6 +757,7 @@ function eb_stell_mqtt($s, $thema, $wert)
 {
     static $gefragt = array();
     $b = eb_broker();
+    if ($b['host'] === '') { eb_ohne_broker_melden(); return false; }
     $schluessel = $b['host'] . ':' . $b['port'] . ' ' . $thema;
     $raeumen = false;
     if (!isset($gefragt[$schluessel])) {

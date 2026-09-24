@@ -16,7 +16,15 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) { return $d; }
+            /* general.json unterscheidet einen LoxBerry von einem fremden
+             * Baum (Regeln/06, Wurzelsuche). Bis 0.9.21 fehlte die
+             * Bedingung: in WSL gemessen (24.09.2026,
+             * Pruefung-Einspeisebremse-0.9.22, Fall P1) hielt eb_paths()
+             * einen Baum mit config/plugins und webfrontend, aber ohne
+             * general.json, fuer die Wurzel. Findet sich keine, bleibt
+             * 'home' leer, und eb_paths() arbeitet im eigenen Ordner. */
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
+                && is_file($d . '/config/system/general.json')) { return $d; }
             $eltern = dirname($d);
             if ($eltern === $d) { break; }
             $d = $eltern;
@@ -37,11 +45,37 @@ function eb_paths()
     static $p = null;
     if ($p !== null) { return $p; }
     $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) { $home = lb_wurzel_ermitteln(); }
-    $dir = getenv('LBPPLUGINDIR');
-    if (!$dir) { $dir = basename(dirname(__FILE__)); }
-    if ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html' || $dir === 'plugins') {
-        $dir = 'einspeisebremse';
+    /* $LBHOMEDIR gilt nur, wenn darunter config/plugins liegt - ein
+     * Verzeichnis ohne ist keine Wurzel, auch wenn die Umgebung es nennt
+     * (Fall P2; bis 0.9.21 galt jedes vorhandene Verzeichnis).
+     * general.json wird hier NICHT verlangt: die Pruefkette setzt
+     * LBHOMEDIR auf eine Attrappe (Werkzeuge/lb). */
+    if (!$home || !is_dir($home . '/config/plugins')) { $home = lb_wurzel_ermitteln(); }
+    /* Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort installiert
+     * liegt (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch verglichen)
+     * oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR und
+     * $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit ihrer Attrappe).
+     * Sonst ist das ein ausgepacktes Archiv, und alles bleibt in dessen
+     * eigenem Ordner (Archivmodus, 'home' leer).
+     * Bis 0.9.21 nahm ein Archiv die gefundene Wurzel und den festen Namen
+     * "einspeisebremse" - also Konfiguration, Daten und Protokoll der Anlage.
+     * In WSL gemessen (24.09.2026, Pruefung-Einspeisebremse-0.9.22, Faelle
+     * P5, P6). Der Ordnername ist der gelesene, nie ein fester. */
+    $eigen = basename(__DIR__);
+    $lbp = (string) getenv('LBPPLUGINDIR');
+    $lbp = $lbp !== '' ? basename(rtrim($lbp, '/')) : '';
+    $installiert = false;
+    if ($home !== '') {
+        $soll = realpath($home . '/webfrontend/html/plugins/' . $eigen);
+        $installiert = ($soll !== false && $soll === realpath(__DIR__));
+    }
+    if ($home !== '' && $lbp !== '' && $home === getenv('LBHOMEDIR')) {
+        $dir = $lbp;
+    } elseif ($installiert) {
+        $dir = $eigen;
+    } else {
+        $home = '';
+        $dir = $lbp !== '' ? $lbp : $eigen;
     }
     $basis = $home !== '' ? $home : dirname(dirname(__DIR__));
     $p = array(
@@ -1648,9 +1682,12 @@ function eb_langdir()
     if ($gefunden !== null) { return $gefunden; }
     $p = eb_paths();
     $k = array();
+    /* Nur der GELESENE Ordnername, dahinter die eigenen Sprachdateien (Archiv).
+     * Bis 0.9.21 stand hier zusaetzlich fest templates/plugins/einspeisebremse -
+     * eine Zweitinstallation einspeisebremse01 las damit die Sprachdateien der
+     * ersten (Fall S1). */
     if ($p['home'] !== '') {
         $k[] = $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang';
-        $k[] = $p['home'] . '/templates/plugins/einspeisebremse/lang';
     }
     $k[] = dirname(dirname(__DIR__)) . '/templates/lang';
     $k[] = dirname(dirname(dirname(__DIR__))) . '/templates/lang';
