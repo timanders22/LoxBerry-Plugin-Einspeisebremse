@@ -17,7 +17,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('EB_KERN', '1.4.0');
+define('EB_KERN', '1.4.1');
 
 /* Was das Stellwerk in einem Durchlauf tun kann. */
 define('EB_NICHTS',   0);
@@ -356,8 +356,19 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
     }
     if ($drossel_alt < $erzeugung + $frei) {
         $wunsch = min($drossel_alt + $frei, $erzeugung + $frei);
-        $erg['drossel_w'] = eb_rampe($drossel_alt, $wunsch, $rab, $rauf);
-        if ($erg['drossel_w'] > $drossel_alt) {
+        $neu_w = eb_rampe($drossel_alt, $wunsch, $rab, $rauf);
+        /* Der Deckel gehoert VOR den Vergleich. Bis Kern 1.4.0 wurde hier
+         * der ungedeckelte Rampenwert mit dem alten verglichen: stand die
+         * Grenze schon auf der Anlagenleistung und wurde Strom bezogen,
+         * hiess es in JEDEM Takt FREIGABE, eb_grenzen_wahren() deckelte auf
+         * denselben Wert zurueck, und der Dienst schickte jedem Stellglied
+         * denselben Stellbefehl noch einmal - gemessen 11 Pakete in 20 s
+         * (Pruefung-Einspeisebremse-0.9.23, Fall D1). Manche Geraete
+         * schreiben jede empfangene Grenze in ihren Flash. Freigegeben ist
+         * nur, was die Grenze wirklich hebt. */
+        if ($anlage_max > 0.0) { $neu_w = min($neu_w, $anlage_max); }
+        if ($neu_w > $drossel_alt) {
+            $erg['drossel_w'] = $neu_w;
             $erg['tat'] = EB_FREIGABE;
             $erg['anlass'] = ($erg['anlass'] === 'weniger_laden')
                 ? 'weniger_laden_freigabe' : 'freigabe';
@@ -882,6 +893,21 @@ function eb_selbsttest($ausgabe = true)
     $r = eb_regeln(array('netz' => -500, 'erzeugung' => 4000, 'soc' => 100, 'alter_s' => 3),
                    $ohne, array('drossel_w' => 100000, 'lade_soll_w' => 0), 1000);
     $pruef('ohne eingetragene Spitzen kein Deckel', $r['drossel_w'], 98000);
+    /* Am Deckel ist nichts freizugeben. Bis Kern 1.4.0 verglich der
+     * Freigabezweig den UNGEDECKELTEN Rampenwert mit dem alten: bei
+     * Netzbezug und Grenze auf der Anlagenleistung hiess es in jedem Takt
+     * FREIGABE, und der Dienst stellte jedes Stellglied erneut auf
+     * denselben Wert. Der letzte Schritt an den Deckel bleibt eine
+     * Freigabe - er hebt die Grenze wirklich. */
+    $deckel = array_merge($ohne, array('anlage_max_w' => 5000));
+    $r = eb_regeln(array('netz' => 2000, 'erzeugung' => null, 'soc' => 100, 'alter_s' => 3),
+                   $deckel, array('drossel_w' => 5000, 'lade_soll_w' => 0), 1000);
+    $pruef('am Deckel und Netzbezug: keine Freigabe', $r['tat'], EB_NICHTS);
+    $pruef('am Deckel und Netzbezug: die Grenze bleibt', $r['drossel_w'], 5000);
+    $r = eb_regeln(array('netz' => 2000, 'erzeugung' => null, 'soc' => 100, 'alter_s' => 3),
+                   $deckel, array('drossel_w' => 4900, 'lade_soll_w' => 0), 1000);
+    $pruef('der letzte Schritt an den Deckel ist eine Freigabe', $r['tat'], EB_FREIGABE);
+    $pruef('und endet auf dem Deckel', $r['drossel_w'], 5000);
 
     // ---- Aufteilen ----
     $st = function ($anteil, $spitze) { return array('anteil' => $anteil, 'spitze_w' => $spitze); };

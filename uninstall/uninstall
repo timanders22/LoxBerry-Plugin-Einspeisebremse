@@ -118,6 +118,22 @@ if [ -f "$PID" ]; then
     rm -f "$PID"
 fi
 
+# Die zurueckbehaltenen MQTT-Themen der Bremse abraeumen. Bis 0.9.22 blieben
+# ein, tat, stufe, ziel, speicher und stellerN/name (bis dahin auch notfall,
+# anlass, wirkung) nach dem Entfernen fuer immer im Broker stehen (WSL,
+# 24.09.2026, Pruefung-Einspeisebremse-0.9.23, Fall U1). NACH dem
+# Freigabe-Durchlauf oben - er sendet ein=0 und tat noch einmal retained -
+# und nach dem Anhalten des Dienstes, sonst schriebe er sie wieder hinein.
+# Abgeraeumt werden nur die eigenen Themen unter dem Praefix; der Aufruf
+# sieht vorher und nachher am Broker nach und sagt, was er fand.
+if [ -f "$EBD" ] && command -v php >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 php "$EBD" --mqtt-leeren 2>/dev/null || true
+    else
+        php "$EBD" --mqtt-leeren 2>/dev/null || true
+    fi
+fi
+
 # Die Deinstallation von LoxBerry entfernt nur das VERZEICHNIS
 # config/plugins/<ordner>/. Eine Sicherungsdatei DANEBEN bliebe liegen.
 rm -f "$BASE/config/plugins/$PFOLDER.backup.json"

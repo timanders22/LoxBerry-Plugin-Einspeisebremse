@@ -1342,6 +1342,22 @@ function eb_mqtt_retained($k)
      * raeumt eb_mqtt_abraeumen() bei jedem Dienststart ab. */
     if (in_array($k, array('speicherok', 'ersatz'), true)
         || preg_match('#^steller([0-9]+|N)/ok$#', $k) === 1) { return false; }
+    /* Ebenso notfall, anlass und wirkung (Nachlese 24.09.2026): notfall
+     * sagt, dass der Dienst den Zaehlerwert nach seiner EIGENEN
+     * Altersrechnung fuer ausgefallen haelt und auf den Notwert faehrt;
+     * anlass ist die Begruendung seiner Entscheidung, wirkung sein Urteil
+     * aus eb_wirkung(). Keines stellt ein Geraet fest. Zurueckbehalten
+     * stuende nach dem Tod des Dienstes "kein Notfall" im Broker. Den
+     * Altwert raeumt eb_mqtt_abraeumen() beim Dienststart ab. */
+    if (in_array($k, array('notfall', 'anlass', 'wirkung'), true)) { return false; }
+    /* Ebenso tat (was die Regelung in diesem Durchlauf tut) und speicher
+     * (ihr Urteil, ob der Speicher dem Sollwert folgt): beides rechnet der
+     * Dienst, beides ist nach seinem Tod falsch. */
+    if (in_array($k, array('tat', 'speicher'), true)) { return false; }
+    /* Retained bleiben damit nur ein, stufe, ziel und stellerN/name. Sie
+     * stellt weder ein Geraet noch eine Rechnung des Dienstes fest, sondern
+     * die Einstellung des Anwenders - sie bleiben wahr, wenn der Dienst
+     * nicht mehr laeuft. */
     return true;
 }
 

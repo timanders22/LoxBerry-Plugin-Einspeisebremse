@@ -3,9 +3,70 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.23
+
+In WSL gemessen (Prüfstand `Pruefung-Einspeisebremse-0.9.23`, 20 Fälle, 43
+Prüfzeilen, alle grün; jede Korrektur einzeln zurückgebaut und geeicht),
+nicht am Gerät:
+
+- **Kein Stellbefehl mehr in jedem Takt, wenn nichts freizugeben ist.** Stand
+  die Grenze schon auf der Anlagenleistung (Summe der eingetragenen
+  Spitzenleistungen) und wurde Strom aus dem Netz bezogen, meldete die
+  Regelung bis 0.9.22 in jedem Takt „Freigabe" und schickte jedem Stellglied
+  denselben Wert noch einmal — gemessen 11 Stellbefehle in 20 s. Manche
+  Adapter und Wechselrichter schreiben jede empfangene Grenze in ihren
+  Flash-Speicher. Jetzt wird die Anlagenleistung vor dem Vergleich
+  angewandt: eine Freigabe geht nur hinaus, wenn sie die Grenze wirklich
+  hebt, der letzte Schritt bis an die Anlagenleistung genau einmal. In
+  dieser Lage steht im MQTT-Thema `tat` jetzt `0` statt `3` und in `anlass`
+  `nichts_zu_holen` statt `freigabe`. Rechenkern 1.4.1 (146 Fälle).
+- **Auch eine stehende Drosselung wird nicht mehr in jedem Takt gestellt.**
+  Stand die Grenze gedrosselt still — am Boden (`drossel_min_w`) oder auf
+  dem Notwert bei ausgefallenem Zähler —, ging der Stellbefehl bis 0.9.22
+  in jedem Takt an jedes Stellglied (gemessen 14 Befehle je Stellglied in
+  32 s). Jetzt geht ein Befehl nur bei einer Änderung der Grenze hinaus.
+  Das Auffrischen übernehmen die eigenen Wege: ein SunSpec-Stellglied vor
+  Ablauf seines Rückfalls (Adresse), MQTT- und **jetzt auch
+  HTTP-Stellglieder** im Abstand **MQTT/HTTP: erneut senden alle (s)**
+  (Vorgabe 300, `0` = aus, weniger als 10 s geht nicht), beides nur,
+  solange gedrosselt wird. **Achtung Flash-Verschleiß:** manche Adapter und
+  Wechselrichter schreiben jede empfangene Grenze dauerhaft in ihren
+  Speicher — dort den Abstand groß wählen oder auf 0 stellen und am Gerät
+  eine eigene Rückfallgrenze einstellen. Ein Stellglied, dessen Anteil sich
+  bei gleicher Gesamtgrenze ändert (Anteil, Spitze, neu eingetragen), bekommt
+  seinen Wert genau einmal; ein gescheiterter Befehl wird nach 30 s
+  wiederholt, nicht mehr in jedem Takt.
+- **`notfall`, `anlass` und `wirkung` gehen nicht mehr retained hinaus.** Es
+  sind Aussagen des Dienstes: `notfall` heißt, der Dienst hält den
+  Zählerwert nach seiner eigenen Altersrechnung für ausgefallen und fährt
+  auf den Notwert; `anlass` ist die Begründung seiner Entscheidung,
+  `wirkung` sein Urteil, ob die Grenze gewirkt hat. Zurückbehalten stünde
+  nach dem Ausfall des Dienstes „kein Notfall" im Broker (Hausstandard,
+  Entscheidung vom 19.09.2026). Der alte zurückbehaltene Wert wird beim
+  Dienststart abgeräumt, wie bei den übrigen nicht retained gesendeten
+  Themen. Nach einem Neustart von Broker oder Gateway fehlen die drei
+  Werte, bis sie sich ändern oder der volle Satz hinausgeht (alle 300 s).
+  Aus demselben Grund gehen auch `tat` (was die Regelung gerade tut) und
+  `speicher` (ihr Urteil, ob der Speicher folgt) nicht mehr retained
+  hinaus. Retained bleiben nur `ein`, `stufe`, `ziel` und `stellerN/name`:
+  sie gibt die Einstellung vor, nicht ein Gerät und keine Rechnung des
+  Dienstes, und sie bleiben wahr, wenn der Dienst nicht mehr läuft.
+- **Die Deinstallation räumt die zurückbehaltenen Themen der Bremse ab.**
+  Bis 0.9.22 blieben `ein`, `tat`, `stufe`, `ziel`, `speicher`,
+  `stellerN/name`, `notfall`, `anlass` und `wirkung` nach dem
+  Entfernen für immer im Broker stehen. Jetzt sieht `uninstall` nach dem
+  Freigeben und dem Anhalten des Dienstes am Broker nach, was unter
+  `<Präfix>/` zurückbehalten ist, räumt genau die eigenen Themen ab — ein
+  fremdes Thema unter demselben Präfix bleibt — und sieht danach noch einmal
+  nach; nur wenn nichts mehr steht, meldet es `<OK>`. Lässt sich nicht
+  nachsehen, werden alle Themen der Bremse vorsorglich abgeräumt, und die
+  Meldung sagt das. Das gilt auch bei abgeschalteter MQTT-Ausgabe. Wie
+  `mosquitto_sub` bei abgelaufener Frist endet (Rückgabe 27), ist nach der
+  Handbuchseite nachgebaut, nicht an einem echten Broker gemessen.
 
 ## Neu in 0.9.22
 

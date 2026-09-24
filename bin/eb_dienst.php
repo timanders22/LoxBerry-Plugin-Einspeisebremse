@@ -11,6 +11,8 @@
  *   php eb_dienst.php --einmal      ein Durchlauf im Vordergrund
  *   php eb_dienst.php --selbsttest  nur der Rechenkern
  *   php eb_dienst.php --probe       Messwerte einmal lesen und zeigen
+ *   php eb_dienst.php --mqtt-leeren zurueckbehaltene Themen der Bremse
+ *                                   abraeumen (aus uninstall/uninstall)
  *
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
@@ -18,6 +20,9 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
 $eb_hier = __DIR__;
+/* Ein gescheiterter Stellbefehl wird bei gleicher Grenze fruehestens nach
+ * so vielen Sekunden wiederholt (eb_durchlauf(), Nachholen). */
+define('EB_NACHHOL_S', 30);
 $eb_lib = '';
 foreach (array(
     /* Der Ordnername aus dem EIGENEN Ablageort, nicht fest: bis 0.9.21 stand
@@ -1061,37 +1066,46 @@ function eb_durchlauf($cfg, $stand)
         return $neu;
     }
 
-    /* ZWEI verschiedene Fragen, die bis 0.9.17 eine einzige waren:
+    /* DREI verschiedene Fragen:
      *
-     *   $wert_neu  - hat sich der gestellte Wert wirklich geaendert?
-     *   $aendert   - soll der Befehl (erneut) hinausgehen?
+     *   $wert_neu  - hat sich die Gesamtgrenze wirklich geaendert?
+     *   $stellen   - geht der Befehl an alle Stellglieder hinaus?
+     *   $fenster   - darf das Wirkungsfenster (neu) beginnen?
      *
-     * Das zweite ist absichtlich weiter gefasst: bei DROSSEL und FREIGABE
-     * wird auch dann gestellt, wenn der Wert gleich bleibt, weil ein
-     * SunSpec-Stellglied seinen Zeitablauf hat und die Drosselung sonst
-     * still ausliefe.
+     * Gestellt wird NUR bei neuem Wert. Bis 0.9.22 ging der Befehl bei
+     * DROSSEL und FREIGABE auch mit gleichem Wert in jedem Takt hinaus,
+     * damit ein SunSpec-Stellglied nicht ablaeuft - bei stehender
+     * Drosselung am Boden oder auf dem Notwert also dauerhaft im Takt an
+     * jedes Geraet (gemessen 9-15 Befehle in 20-32 s,
+     * Pruefung-Einspeisebremse-0.9.23, Faelle D3, A1, A2), und manche
+     * Geraete schreiben jede Grenze in ihren Flash. Das Auffrischen
+     * uebernehmen die eigenen Wege unten: SunSpec vor Ablauf von
+     * WMaxLimPct_RvrtTms, MQTT und HTTP im Abstand auffrisch_s. Eine
+     * FREIGABE bringt seit Kern 1.4.1 ohnehin immer einen hoeheren Wert.
      *
-     * Das ERSTE aber entscheidet ueber das Wirkungsfenster, und dort
-     * stand bis 0.9.17 dasselbe $aendert. Folge: nimmt das Geraet den
-     * Wert an und regelt trotzdem nicht, bleibt tat auf DROSSEL, das
-     * Fenster wurde in JEDEM Takt neu gestartet, vergangen_s blieb 0,
-     * und eb_wirkung() gibt unterhalb der Wartezeit immer 0 zurueck. Die
-     * Zeile "KEINE WIRKUNG" konnte genau in dem Fall nie erscheinen,
-     * fuer den sie gebaut wurde. */
+     * Das Wirkungsfenster behaelt seine Bedingung - es misst, es stellt
+     * nicht. Bis 0.9.17 hing es am selben Ausdruck wie der Befehl: nimmt
+     * das Geraet den Wert an und regelt trotzdem nicht, bleibt tat auf
+     * DROSSEL, das Fenster wurde in JEDEM Takt neu gestartet, vergangen_s
+     * blieb 0, und die Zeile "KEINE WIRKUNG" konnte genau in dem Fall nie
+     * erscheinen, fuer den sie gebaut wurde. */
     $grenze_alt = isset($zust['drossel_w']) ? $zust['drossel_w'] : null;
     $wert_neu = ($grenze_alt === null
                  || (int) round($r['drossel_w']) !== (int) round($grenze_alt));
-    $aendert = ($r['tat'] === EB_DROSSEL || $r['tat'] === EB_FREIGABE || $wert_neu);
+    $stellen = $wert_neu;
+    $fenster = ($r['tat'] === EB_DROSSEL || $r['tat'] === EB_FREIGABE || $wert_neu);
+    $anteile = eb_aufteilen($r['drossel_w'], $steller);
+    $gestellt_jetzt = array();
 
-    if ($aendert) {
-        $anteile = eb_aufteilen($r['drossel_w'], $steller);
+    if ($stellen) {
         $neu['steller'] = array();
         $summe = 0.0;
         foreach ($steller as $nr => $s) {
             $watt = isset($anteile[$nr]) ? $anteile[$nr] : 0.0;
             list($ok, $was) = eb_stellen($s, $watt);
             $neu['steller'][(string) $nr] = array('name' => $s['name'], 'watt' => $watt,
-                                                  'ok' => $ok, 'was' => $was);
+                                                  'ok' => $ok, 'was' => $was, 'um' => $jetzt);
+            $gestellt_jetzt[(string) $nr] = 1;
             $summe += $watt;
             if (!$ok) { eb_log('Stellglied ' . $s['name'] . ': ' . $was); }
         }
@@ -1099,25 +1113,63 @@ function eb_durchlauf($cfg, $stand)
          * kleiner sein als GRENZE, wenn eine Spitzenleistung deckelt -
          * GRENZE allein sagt das nicht. */
         $neu['gestellt_w'] = $summe;
-        /* Das Fenster wird geoeffnet, wenn sich der Wert wirklich geaendert
-         * hat - oder wenn gerade keines laeuft (nach einem Urteil setzt
-         * die Auswertung unten gestellt_um auf 0 zurueck). Es wird NICHT
-         * bei jedem Auffrischen neu gestartet. */
-        if ($wert_neu || empty($neu['gestellt_um'])) {
-            $neu['gestellt_um'] = $jetzt;
-            $neu['netz_vorher'] = ($netz === null) ? null : -$netz;   // Einspeisung vorher
-            $neu['grenze_vorher'] = $grenze_alt;
-            $neu['wirkung'] = 0;
-        }
         /* Nur die echte Aenderung kommt ins Protokoll. Bei stehender
          * Grenze stuenden sonst im Fuenfsekundentakt 17280 gleichlautende
          * Zeilen am Tag auf einer Ramdisk. */
-        if ($wert_neu) {
-            eb_log(sprintf('%s: Netz %s W, Ueberschuss %s W -> Grenze %d W (gestellt %d W), Ladesoll %d W',
-                $r['anlass'], $netz === null ? '-' : (int) $netz,
-                $r['ueberschuss_w'] === null ? '-' : (int) $r['ueberschuss_w'],
-                (int) $r['drossel_w'], (int) $summe, (int) $r['lade_soll_w']));
+        eb_log(sprintf('%s: Netz %s W, Ueberschuss %s W -> Grenze %d W (gestellt %d W), Ladesoll %d W',
+            $r['anlass'], $netz === null ? '-' : (int) $netz,
+            $r['ueberschuss_w'] === null ? '-' : (int) $r['ueberschuss_w'],
+            (int) $r['drossel_w'], (int) $summe, (int) $r['lade_soll_w']));
+    } else {
+        /* ---- Nachholen, je Stellglied genau einmal ----
+         * Bei gleicher Gesamtgrenze geht ein Befehl nur an ein Stellglied,
+         * (a) dessen Anteil sich geaendert hat oder das noch nie gestellt
+         *     wurde (Anteil, Spitze, ein neues Stellglied, Einschalten nach
+         *     der Freigabe), oder
+         * (b) dessen letzter Befehl scheiterte - fruehestens EB_NACHHOL_S
+         *     danach. Bis 0.9.22 wiederholte das stehende DROSSEL beides
+         *     nebenbei in jedem Takt; ohne diesen Ersatz bliebe ein
+         *     gescheiterter Befehl bis zur naechsten Aenderung liegen, bei
+         *     SunSpec ohne Rueckfall und bei auffrisch_s = 0 unbegrenzt
+         *     (Fall N1). */
+        $etwas = false;
+        foreach ($steller as $nr => $s) {
+            $k = (string) $nr;
+            $watt = isset($anteile[$nr]) ? $anteile[$nr] : 0.0;
+            $alt = (isset($neu['steller'][$k]) && is_array($neu['steller'][$k])) ? $neu['steller'][$k] : null;
+            $anders = ($alt === null || !isset($alt['watt'])
+                       || (int) round((float) $alt['watt']) !== (int) round($watt));
+            $gescheitert = ($alt !== null && empty($alt['ok'])
+                            && ($jetzt - (isset($alt['um']) ? (float) $alt['um'] : 0.0)) >= EB_NACHHOL_S);
+            if (!$anders && !$gescheitert) { continue; }
+            list($ok, $was) = eb_stellen($s, $watt);
+            $neu['steller'][$k] = array('name' => $s['name'], 'watt' => $watt,
+                                        'ok' => $ok, 'was' => $was, 'um' => $jetzt);
+            $gestellt_jetzt[$k] = 1;
+            $etwas = true;
+            if (!$ok) {
+                eb_log('Stellglied ' . $s['name'] . ': ' . $was . ' (naechster Versuch in '
+                     . EB_NACHHOL_S . ' s)');
+            }
         }
+        if ($etwas) {
+            $summe = 0.0;
+            foreach ($steller as $nr => $s) {
+                $k = (string) $nr;
+                if (isset($neu['steller'][$k]['watt'])) { $summe += (float) $neu['steller'][$k]['watt']; }
+            }
+            $neu['gestellt_w'] = $summe;
+        }
+    }
+    /* Das Fenster wird geoeffnet, wenn sich der Wert wirklich geaendert
+     * hat - oder wenn gerade keines laeuft (nach einem Urteil setzt die
+     * Auswertung unten gestellt_um auf 0 zurueck). Es wird NICHT bei
+     * jedem Auffrischen neu gestartet. */
+    if ($fenster && ($wert_neu || empty($neu['gestellt_um']))) {
+        $neu['gestellt_um'] = $jetzt;
+        $neu['netz_vorher'] = ($netz === null) ? null : -$netz;   // Einspeisung vorher
+        $neu['grenze_vorher'] = $grenze_alt;
+        $neu['wirkung'] = 0;
     }
 
     /* ---- Stellglieder mit Zeitablauf auffrischen ----
@@ -1131,7 +1183,7 @@ function eb_durchlauf($cfg, $stand)
      *
      * Aufgefrischt wird nur, was auch etwas haelt: liegt die Grenze auf
      * oder ueber der Nennleistung des Geraets, gibt es nichts zu halten. */
-    if ($aendert) {
+    if ($stellen) {
         $neu['auffrisch_um'] = $jetzt;
     } else {
         $faellig_s = 0;
@@ -1143,16 +1195,16 @@ function eb_durchlauf($cfg, $stand)
             if ($w > 0 && ($faellig_s === 0 || $w < $faellig_s)) { $faellig_s = $w; }
         }
         if ($faellig_s > 0 && ($jetzt - (float) $neu['auffrisch_um']) >= $faellig_s) {
-            $anteile = eb_aufteilen($r['drossel_w'], $steller);
             $etwas = 0;
             foreach ($steller as $nr => $s) {
                 if ($s['art'] !== 'sunspec') { continue; }
+                if (isset($gestellt_jetzt[(string) $nr])) { $etwas = 1; continue; }
                 $watt = isset($anteile[$nr]) ? $anteile[$nr] : 0.0;
                 $spitze = (float) $s['spitze_w'];
                 if ($spitze > 0.0 && $watt >= $spitze) { continue; }
                 list($ok, $was) = eb_stellen($s, $watt);
                 $neu['steller'][(string) $nr] = array('name' => $s['name'], 'watt' => $watt,
-                                                      'ok' => $ok, 'was' => $was);
+                                                      'ok' => $ok, 'was' => $was, 'um' => $jetzt);
                 $etwas = 1;
                 if (!$ok) { eb_log('Auffrischen ' . $s['name'] . ': ' . $was); }
             }
@@ -1160,14 +1212,18 @@ function eb_durchlauf($cfg, $stand)
         }
     }
 
-    /* ---- MQTT-Stellglieder auffrischen ----
-     * Der Stellbefehl ueber MQTT geht ohne Retain hinaus (eb_stell_mqtt()).
+    /* ---- MQTT- und HTTP-Stellglieder auffrischen ----
+     * Der Stellbefehl ueber MQTT geht ohne Retain hinaus (eb_stell_mqtt()),
+     * und seit 0.9.23 geht auch sonst nur bei Aenderung ein Befehl hinaus.
      * Ein Geraet oder Adapter, der neu startet oder die Verbindung verliert,
      * bekaeme die Grenze sonst erst bei der naechsten Aenderung - bei
      * stehender Grenze womoeglich stundenlang nicht, und er speiste
      * waehrenddessen ungebremst ein. Deshalb geht sie je Stellglied im
      * eingestellten Abstand erneut hinaus (auffrisch_s, 0 = aus), mit
-     * eigener Frist je Stellglied; jede Aenderung setzt die Frist zurueck.
+     * eigener Frist je Stellglied; jede Aenderung und jedes Nachholen
+     * setzen die Frist zurueck. Fuer HTTP gilt dasselbe seit 0.9.23; der
+     * Name des Stand-Felds mqtt_auffrisch stammt aus 0.9.21 und bleibt,
+     * damit laufende Fristen ein Update ueberstehen.
      *
      * Nur solange gedrosselt wird. Mit Spitzenleistung wie bei SunSpec:
      * liegt der Anteil auf oder ueber ihr, gibt es nichts zu halten. OHNE
@@ -1180,24 +1236,23 @@ function eb_durchlauf($cfg, $stand)
      * alten zurueckbehaltenen Werts haengt an Merker und Prozess-Merker in
      * eb_stell_mqtt() und wird hier nicht erneut ausgeloest. */
     $mq_alt = $neu['mqtt_auffrisch'];
-    $mq_anteile = null;
     $neu['mqtt_auffrisch'] = array();
     foreach ($steller as $nr => $s) {
-        if ($s['art'] !== 'mqtt') { continue; }
+        if (!in_array($s['art'], array('mqtt', 'http_get', 'http_post'), true)) { continue; }
         $k = (string) $nr;
         $um = isset($mq_alt[$k]) ? (float) $mq_alt[$k] : 0.0;
         $abstand = (int) $s['auffrisch_s'];
-        if ($aendert) { $neu['mqtt_auffrisch'][$k] = $jetzt; continue; }
+        if ($stellen || isset($gestellt_jetzt[$k])) { $neu['mqtt_auffrisch'][$k] = $jetzt; continue; }
         $neu['mqtt_auffrisch'][$k] = $um;
         if ($abstand <= 0 || ($jetzt - $um) < $abstand) { continue; }
-        if ($mq_anteile === null) { $mq_anteile = eb_aufteilen($r['drossel_w'], $steller); }
-        $watt = isset($mq_anteile[$nr]) ? $mq_anteile[$nr] : 0.0;
+        $watt = isset($anteile[$nr]) ? $anteile[$nr] : 0.0;
         $spitze = (float) $s['spitze_w'];
         $frei = $spitze > 0.0 ? ($watt >= $spitze)
                               : ((float) $r['drossel_w'] >= (float) $cfg['frei_w']);
         if ($frei) { continue; }
         list($ok, $was) = eb_stellen($s, $watt);
-        $neu['steller'][$k] = array('name' => $s['name'], 'watt' => $watt, 'ok' => $ok, 'was' => $was);
+        $neu['steller'][$k] = array('name' => $s['name'], 'watt' => $watt, 'ok' => $ok, 'was' => $was,
+                                    'um' => $jetzt);
         $neu['mqtt_auffrisch'][$k] = $jetzt;
         if (!$ok) { eb_log('Auffrischen ' . $s['name'] . ': ' . $was); }
     }
@@ -1275,18 +1330,148 @@ function eb_durchlauf($cfg, $stand)
 function eb_mqtt_abraeumen($praefix)
 {
     $n = 0;
-    foreach (array_keys(eb_mqtt_themen()) as $k) {
-        $namen = array($k);
-        if (strpos($k, 'stellerN/') === 0) {
-            $namen = array();
-            for ($i = 1; $i <= EB_STELLER; $i++) { $namen[] = 'steller' . $i . substr($k, 8); }
-        }
-        foreach ($namen as $name) {
-            if (eb_mqtt_retained($name)) { continue; }
-            if (eb_mqtt_veroeffentlichen($praefix . '/' . $name, null, true)) { $n++; }
-        }
+    foreach (eb_mqtt_eigene_namen() as $name) {
+        if (eb_mqtt_retained($name)) { continue; }
+        if (eb_mqtt_veroeffentlichen($praefix . '/' . $name, null, true)) { $n++; }
     }
     return $n;
+}
+
+/**
+ * Die Themen der Bremse, wie sie im Broker heissen (ohne Praefix):
+ * stellerN als steller1 bis steller<EB_STELLER>. Eine Quelle fuer das
+ * Abraeumen beim Dienststart und beim Deinstallieren.
+ */
+function eb_mqtt_eigene_namen()
+{
+    $aus = array();
+    foreach (array_keys(eb_mqtt_themen()) as $k) {
+        if (strpos($k, 'stellerN/') === 0) {
+            for ($i = 1; $i <= EB_STELLER; $i++) { $aus[] = 'steller' . $i . substr($k, 8); }
+        } else {
+            $aus[] = $k;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Welche Themen stehen unter $praefix/ zurueckbehalten im Broker? Liste der
+ * Themen ohne Praefix, oder null = nicht feststellbar.
+ *
+ * mosquitto_sub --retained-only: der Broker schickt beim Abonnieren jeden
+ * zurueckbehaltenen Wert unter dem Filter; die erste andere Nachricht
+ * beendet mit 0, sonst endet die Frist -W mit 27 (MOSQ_ERR_TIMEOUT,
+ * mosquitto 2.x, nach der Handbuchseite - nicht am Geraet gemessen). Als
+ * Argumentliste und mit eigener Frist wie eb_stell_altlast_lesen(): ein
+ * Broker, der annimmt und nie antwortet, haelt mosquitto_sub fest, bevor
+ * -W zu zaehlen beginnt.
+ */
+function eb_mqtt_behalten_lesen($praefix, $b)
+{
+    $argv = array('mosquitto_sub', '-h', $b['host'], '-p', (string) $b['port'],
+                  '-t', $praefix . '/#', '--retained-only', '-W', '2', '-F', '%t');
+    if ($b['user'] !== '') { $argv[] = '-u'; $argv[] = $b['user']; }
+    if ($b['pass'] !== '') { $argv[] = '-P'; $argv[] = $b['pass']; }
+    $rohre = array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'),
+                   2 => array('file', '/dev/null', 'a'));
+    $ph = @proc_open($argv, $rohre, $pipes);
+    if (!is_resource($ph)) { return null; }
+    stream_set_blocking($pipes[1], false);
+    $aus = '';
+    $rc = null;
+    $frist = microtime(true) + 8.0;
+    while (true) {
+        $aus .= (string) @stream_get_contents($pipes[1]);
+        $st = @proc_get_status($ph);
+        if (!is_array($st) || empty($st['running'])) {
+            $rc = is_array($st) ? (int) $st['exitcode'] : null;
+            break;
+        }
+        if (microtime(true) >= $frist) { @proc_terminate($ph, 9); break; }
+        usleep(20000);
+    }
+    $aus .= (string) @stream_get_contents($pipes[1]);
+    @fclose($pipes[1]);
+    @proc_close($ph);
+    if ($rc !== 0 && $rc !== 27) { return null; }
+    $vorn = $praefix . '/';
+    $themen = array();
+    foreach (preg_split('/\r?\n/', $aus) as $z) {
+        if (strlen($z) <= strlen($vorn) || strpos($z, $vorn) !== 0) { continue; }
+        $themen[substr($z, strlen($vorn))] = 1;
+    }
+    return array_keys($themen);
+}
+
+/**
+ * --mqtt-leeren: die zurueckbehaltenen Themen der Bremse abraeumen.
+ *
+ * Bis 0.9.22 raeumte die Deinstallation kein MQTT-Thema ab; ein, tat,
+ * stufe, ziel, speicher und stellerN/name blieben nach dem Entfernen fuer
+ * immer im Broker stehen (WSL, 24.09.2026, Pruefung-Einspeisebremse-0.9.23,
+ * Fall U1). Aufgerufen aus uninstall/uninstall NACH dem Freigabe-Durchlauf
+ * und dem Anhalten des Dienstes - sonst schriebe er sie wieder hinein.
+ *
+ * Abgeraeumt wird nur, was wirklich dasteht, und nur EIGENE Themen: ein
+ * fremdes Thema unter demselben Praefix bleibt. Laesst sich nicht
+ * nachsehen, werden alle eigenen Themen vorsorglich abgeraeumt (eine leere
+ * Nutzlast auf einem Thema ohne zurueckbehaltenen Wert loescht nichts).
+ * Danach wird nachgelesen; nur ein leerer Befund ergibt <OK>. Unabhaengig
+ * von mqtt_ein: auch eine abgeschaltete Ausgabe kann Altwerte hinterlassen.
+ *
+ * Rueckgabe 0 = nachgesehen, es steht nichts Eigenes mehr; 1 = es steht
+ * noch etwas, oder es liess sich nicht nachpruefen; 2 = nicht moeglich.
+ */
+function eb_mqtt_leeren()
+{
+    $cfg = eb_config();
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    if ($praefix === '' || strpbrk($praefix, '+#') !== false) {
+        echo "<WARNING> MQTT: das Themenpraefix '" . $praefix . "' ist leer oder enthaelt einen "
+           . "Platzhalter - es wird nichts abgeraeumt.\n";
+        return 2;
+    }
+    $b = eb_broker();
+    if ($b['host'] === '') {
+        echo "<INFO> MQTT: kein Broker bekannt (keine LoxBerry-Wurzel) - zurueckbehaltene Themen "
+           . "unter " . $praefix . "/ wurden nicht abgeraeumt.\n";
+        return 2;
+    }
+    $eigene = eb_mqtt_eigene_namen();
+    $vorher = eb_mqtt_behalten_lesen($praefix, $b);
+    if ($vorher === null) {
+        $ziel = $eigene;
+        echo "<INFO> MQTT: welche Themen unter " . $praefix . "/ zurueckbehalten sind, liess sich "
+           . "nicht feststellen; alle " . count($ziel) . " Themen der Bremse werden vorsorglich "
+           . "abgeraeumt.\n";
+    } else {
+        $ziel = array_values(array_intersect($eigene, $vorher));
+    }
+    $gesendet = 0;
+    foreach ($ziel as $name) {
+        if (eb_mqtt_veroeffentlichen($praefix . '/' . $name, null, true)) { $gesendet++; }
+    }
+    if ($vorher !== null && !$ziel) {
+        echo "<OK> MQTT: unter " . $praefix . "/ stand kein zurueckbehaltenes Thema der Bremse.\n";
+        return 0;
+    }
+    $nach = eb_mqtt_behalten_lesen($praefix, $b);
+    if ($nach === null) {
+        echo "<INFO> MQTT: " . $gesendet . " von " . count($ziel) . " Themen unter " . $praefix
+           . "/ abgeraeumt; ob noch etwas steht, liess sich nicht nachpruefen.\n";
+        return 1;
+    }
+    $rest = array_values(array_intersect($eigene, $nach));
+    if ($rest) {
+        echo "<WARNING> MQTT: nach dem Abraeumen stehen noch " . count($rest) . " Themen der Bremse "
+           . "im Broker: " . $praefix . '/' . implode(', ' . $praefix . '/', $rest) . "\n";
+        echo "<INFO> Selbst abraeumen: mosquitto_pub -h BROKER -p PORT -t THEMA -r -n\n";
+        return 1;
+    }
+    echo "<OK> MQTT: " . count($ziel) . " Themen der Bremse unter " . $praefix . "/ abgeraeumt; "
+       . "am Broker nachgesehen, es steht keines mehr.\n";
+    return 0;
 }
 
 function eb_veroeffentlichen($cfg, $stand)
@@ -1605,6 +1790,12 @@ if ($eb_hat('--sunspec')) {
     }
     if (!$gefunden) { echo "Kein Stellglied steht auf dem SunSpec-Weg.\n"; }
     exit(0);
+}
+
+/* Vor dem Anlegen des Datenordners: die Deinstallation ruft das, und der
+ * Ordner wird gleich danach geloescht. */
+if ($eb_hat('--mqtt-leeren')) {
+    exit(eb_mqtt_leeren());
 }
 
 $eb_p = eb_paths();
