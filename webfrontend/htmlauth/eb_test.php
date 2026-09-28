@@ -525,7 +525,8 @@ function eb_selbstpruefung()
 
     /* ---- Dann die Einstellung ---- */
     $m = eb_maengel($cfg);
-    $z[] = eb_pruefzeile(eb_klartext('SP.MAENGEL'), $m ? 0 : 1,
+    /* Kreuz nur fuer Sperrmaengel; die uebrigen sind Hinweise (seit 0.9.27). */
+    $z[] = eb_pruefzeile(eb_klartext('SP.MAENGEL'), eb_maengel_sperren($m) ? 0 : ($m ? -1 : 1),
         $m ? sprintf(eb_klartext('SP.MAENGEL_ZAHL'), count($m)) : eb_klartext('SP.MAENGEL_KEINE'));
 
     $z[] = eb_pruefzeile(eb_klartext('SP.REGELUNG'), empty($cfg['ein']) ? -1 : 1,

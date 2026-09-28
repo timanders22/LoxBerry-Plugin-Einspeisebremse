@@ -97,7 +97,9 @@ if ($eb_aktion === 'ein') {
      * kommentarlos ein - und Loxone bekam EIN=1 fuer eine Regelung, die
      * nichts regeln kann. Fail closed: im Zweifel nicht einschalten. */
     if ($neu === 1) {
-        $eb_mangel = eb_maengel($eb_cfg);
+        /* Seit 0.9.27 sperren nur die Maengel aus eb_maengel_sperrend() -
+         * dieselbe Liste wie der Knopf in der Oberflaeche. */
+        $eb_mangel = eb_maengel_sperren(eb_maengel($eb_cfg));
         if ($eb_mangel) {
             http_response_code(409);
             echo "FEHLER;OK=0;GRUND=MAENGEL;EIN=" . (int) $eb_cfg['ein'] . "\n";

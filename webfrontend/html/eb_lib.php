@@ -1002,6 +1002,37 @@ function eb_befehl_bauen($steller, $watt)
  * Wird sowohl beim Speichern als auch im Reiter Test gerufen. Lieber eine
  * Liste unbequemer Saetze als eine Anlage, die still nichts regelt.
  */
+/**
+ * Die Maengel, die das Einschalten SPERREN. Alle uebrigen werden gemeldet,
+ * sperren aber nicht. Entscheidung des Hausherrn 28.09.2026: gesperrt wird,
+ * wenn die Regelung sonst nichts Sinnvolles tun kann (kein Zaehler, kein
+ * Stellglied, Befehl ohne Platzhalter, unlesbare Adresse) oder im Fehlerfall
+ * die Auflage verletzen wuerde (Notwert zu hoch, SunSpec-Rueckfall kuerzer als
+ * die Auffrischung, doppelt gezaehlte oder luekenhafte Erzeugung, Speicherweg,
+ * der Unsinn sendet). Bis 0.9.26 sperrte JEDER Mangel - auch die, deren Text
+ * ausdruecklich "gemeldet, nicht gesperrt" sagt (STELLER_DOPPELT).
+ * Eine Liste, alle Wege: Knopf, Endpunkt, Speichern und Zurueckspielen bei
+ * eingeschalteter Regelung, Anzeige, Reiter Test.
+ */
+function eb_maengel_sperrend()
+{
+    return array(
+        'MANGEL.KEIN_ZAEHLER', 'MANGEL.ZAEHLER_OHNE_ADRESSE', 'MANGEL.KEIN_STELLER',
+        'MANGEL.STELLER_OHNE_ADRESSE', 'MANGEL.OHNE_PLATZHALTER', 'MANGEL.PROZENT_OHNE_SPITZE',
+        'MANGEL.SUNSPEC_FORM', 'MANGEL.SUNSPEC_OHNE_SPITZE', 'MANGEL.MODBUS_FORM',
+        'MANGEL.NOTWERT_ZU_HOCH', 'MANGEL.SUNSPEC_RUECKFALL_ZU_KURZ',
+        'MANGEL.ERZEUGUNG_DOPPELT', 'MANGEL.ERZEUGUNG_WEITERE_OHNE_ADRESSE',
+        'MANGEL.SPEICHER_OHNE_ADRESSE', 'MANGEL.SPEICHER_OHNE_PLATZHALTER',
+        'MANGEL.SPEICHER_PROZENT_OHNE_SPITZE', 'MANGEL.SPEICHER_SUNSPEC',
+    );
+}
+
+/** Aus einer Maengelliste die sperrenden - in derselben Reihenfolge. */
+function eb_maengel_sperren($m)
+{
+    return array_values(array_intersect($m, eb_maengel_sperrend()));
+}
+
 function eb_maengel($cfg)
 {
     $m = array();
@@ -2134,9 +2165,13 @@ function eb_merkwort()
     }
     /* Rechte VOR dem Inhalt: zwischen Anlegen und chmod laege sonst ein
      * Fenster, in dem das Merkwort fuer alle lesbar ist. */
-    $tmp = $datei . '.tmp';
-    if (@file_put_contents($tmp, $neu) !== false) {
-        @chmod($tmp, 0600);
+    /* Seit 0.9.27 wirklich so, wie der Kommentar oben sagt (Regeln/03 Z. 658):
+     * Nebendatei mit PID, erst leer anlegen und schuetzen, dann fuellen. Bis
+     * 0.9.26 hiess sie fest ".tmp" und bekam den Inhalt vor dem chmod. */
+    $tmp = $datei . '.tmp.' . getmypid();
+    $fh = @fopen($tmp, 'c');
+    if ($fh !== false) { @chmod($tmp, 0600); }
+    if ($fh !== false && ftruncate($fh, 0) && fwrite($fh, $neu) === strlen($neu) && fclose($fh)) {
         if (@rename($tmp, $datei)) {
             @chmod($datei, 0600);
         } else {

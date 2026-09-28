@@ -126,16 +126,24 @@ if ($eb_post && isset($_POST['schalten'])) {
     $eb_cfg = eb_config();
     $eb_neu = ((string) $_POST['schalten'] === '1') ? 1 : 0;
     $eb_mangel = eb_maengel($eb_cfg);
-    if ($eb_neu === 1 && $eb_mangel) {
+    $eb_sperrt = eb_maengel_sperren($eb_mangel);
+    if ($eb_neu === 1 && $eb_sperrt) {
         /* Nicht einschalten, solange etwas fehlt. Eine Regelung, die ohne
          * Zaehler oder ohne Stellglied "laeuft", meldet Betrieb und tut
-         * nichts - das ist schlimmer als eine, die gar nicht erst angeht. */
-        foreach ($eb_mangel as $eb_k) { $eb_fehler[] = eb_t($eb_k); }
+         * nichts - das ist schlimmer als eine, die gar nicht erst angeht.
+         * Seit 0.9.27 sperren nur die Maengel aus eb_maengel_sperrend(). */
+        foreach ($eb_sperrt as $eb_k) { $eb_fehler[] = eb_t($eb_k); }
         $eb_fehler[] = eb_t('FEHLER.NICHT_EINGESCHALTET');
     } else {
         $eb_cfg['ein'] = $eb_neu;
         if (eb_config_speichern($eb_cfg)) {
             $eb_meldungen[] = eb_t($eb_neu ? 'ALLG.EINGESCHALTET' : 'ALLG.AUSGESCHALTET');
+            /* Was nicht sperrt, wird beim Einschalten trotzdem gesagt. */
+            if ($eb_neu === 1) {
+                foreach (array_diff($eb_mangel, $eb_sperrt) as $eb_k) {
+                    $eb_meldungen[] = eb_t('EINST.MANGEL_HINWEIS') . ': ' . eb_t($eb_k);
+                }
+            }
             eb_log('Regelung ' . ($eb_neu ? 'eingeschaltet' : 'ausgeschaltet') . ' (Oberflaeche).');
         } else {
             $eb_fehler[] = eb_t('FEHLER.SPEICHERN');
@@ -464,6 +472,17 @@ if ($eb_post && isset($_POST['speichern'])) {
         }
     }
 
+    /* Bei eingeschalteter Regelung wird kein Stand gespeichert, der das
+     * Einschalten sperren wuerde - sonst liefe sie mit einem Sperrmangel weiter,
+     * den der Knopf nie zugelassen haette (Pruefer 28.09.2026, O7). */
+    if (!$eb_fehler && !empty($eb_cfg['ein'])) {
+        $eb_sperrt = eb_maengel_sperren(eb_maengel($eb_cfg));
+        if ($eb_sperrt) {
+            foreach ($eb_sperrt as $eb_k) { $eb_fehler[] = eb_t($eb_k); }
+            $eb_fehler[] = eb_t('FEHLER.SPERRT_SPEICHERN');
+        }
+    }
+
     if (!$eb_fehler) {
         if (eb_config_speichern($eb_cfg)) {
             $eb_meldungen[] = eb_t('ALLG.GESPEICHERT');
@@ -560,6 +579,11 @@ if ($eb_post && isset($_POST['eb_zurueck'])) {
              * nichts. */
             $eb_fehler[] = eb_t('EINST.SICH_ABGELEHNT') . ' '
                             . implode(' ', $eb_sich_mangel);
+        } elseif (!empty($eb_neu['ein']) && eb_maengel_sperren(eb_maengel($eb_neu))) {
+            /* Eine Sicherung, die mit einem Sperrmangel EINSCHALTET, wird nicht
+             * zurueckgespielt - geaendert wird nichts (Pruefer 28.09.2026, O7). */
+            $eb_fehler[] = eb_t('EINST.SICH_SPERRT');
+            foreach (eb_maengel_sperren(eb_maengel($eb_neu)) as $eb_k) { $eb_fehler[] = eb_t($eb_k); }
         } elseif (eb_config_speichern($eb_neu)) {
             $eb_meldungen[] = sprintf(eb_t('EINST.SICH_UEBERNOMMEN'), $eb_n);
             foreach ($eb_sich_hinweis as $eb_h) { $eb_meldungen[] = $eb_h; }
@@ -827,7 +851,8 @@ if ($eb_rahmen) {
 <div class="sm-step"><?= eb_t('EINST.SCHALTER_ERKLAERUNG') ?></div>
 <?php if ($eb_mangel) { ?>
 <div class="sm-warnung"><b><?= eb_e(eb_t('EINST.MAENGEL_KOPF')) ?></b><ul>
-<?php foreach ($eb_mangel as $eb_m) { ?><li><?= eb_t($eb_m) ?></li><?php } ?>
+<?php $eb_sperrt_anz = eb_maengel_sperren($eb_mangel);
+foreach ($eb_mangel as $eb_m) { ?><li><b><?= eb_e(eb_t(in_array($eb_m, $eb_sperrt_anz, true) ? 'EINST.MANGEL_SPERRT' : 'EINST.MANGEL_HINWEIS')) ?>:</b> <?= eb_t($eb_m) ?></li><?php } ?>
 </ul></div>
 <?php } ?>
 <div class="sm-knopfreihe">

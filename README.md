@@ -3,9 +3,28 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.26 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.27 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.27
+
+**Welche Mängel das Einschalten sperren** (Entscheidung vom 28.09.2026). Gesperrt wird nur noch, wenn die
+Regelung sonst nichts Sinnvolles tun kann oder im Fehlerfall die Auflage verletzen würde: kein oder
+unvollständiger Netzzähler, kein Stellglied, Stellglied ohne Adresse oder Platzhalter, Prozent oder SunSpec
+ohne Spitzenleistung, unlesbare SunSpec- oder Modbus-Adresse, Notwert über der erlaubten Einspeisung,
+SunSpec-Rückfall kürzer als die Auffrischung, doppelt gezählte oder lückenhafte Erzeugung und ein Speicherweg,
+der Unsinn senden würde. Alle übrigen Mängel — etwa zwei Stellglieder auf demselben Gerät, SunSpec ohne
+Rückfall, ein kurzer Notfall-Zeitraum, eine verdrehte Rampe — werden angezeigt und beim Einschalten genannt,
+sperren aber nicht mehr. Bis 0.9.26 sperrte jeder Mangel, auch die, deren Text „gemeldet, nicht gesperrt" sagte.
+
+Dieselbe Liste gilt an allen Wegen: Knopf, Endpunkt (`aktion=ein`), Speichern und Zurückspielen. Neu ist
+dabei: bei eingeschalteter Regelung wird kein Stand gespeichert und keine Sicherung zurückgespielt, die einen
+sperrenden Mangel hätte — bisher lief die Regelung dann mit einem Mangel weiter, den der Knopf nie zugelassen
+hätte. Die Mängelliste zeigt je Eintrag „sperrt das Einschalten" oder „Hinweis, sperrt nicht"; der Reiter Test
+zeigt ein Kreuz nur noch für sperrende Mängel.
+
+Das Formular-Merkwort wird wie jede andere Datei geschrieben: Nebendatei mit Prozessnummer, Rechte vor dem Inhalt.
 
 ## Neu in 0.9.26
 
