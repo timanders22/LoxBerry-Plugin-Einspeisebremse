@@ -76,6 +76,18 @@ if ($eb_wache !== '') {
 $eb_testausgabe = '';
 $eb_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
+/* Die Einmalmeldung der vorigen Anfrage - NUR beim GET (Regeln/04): beim
+ * POST ist $eb_fehler zugleich der Sammler der Eingabepruefung, und eine
+ * alte Beanstandung verhinderte dort das naechste Speichern. */
+if (!$eb_post) {
+    $eb_einmal = eb_einmal_lesen();
+    if ($eb_einmal) {
+        $eb_meldungen = $eb_einmal['meldungen'];
+        $eb_fehler = array_merge($eb_fehler, $eb_einmal['fehler']);
+        $eb_testausgabe = $eb_einmal['test'];
+    }
+}
+
 /* ==================================================================
  * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
  * ==================================================================
@@ -147,7 +159,10 @@ if ($eb_post && isset($_POST['dienst'])) {
                   $eb_aus, $eb_rc);
             /* Die WIRKUNG melden, nicht den Rueckgabewert: dienst.sh sagt
              * selbst, ob der Dienst hinterher laeuft. */
-            if ($eb_rc === 0 || $eb_befehl === 'stop') {
+            /* Auch stop: dienst.sh endet mit 1 und sagt "liess sich NICHT
+             * anhalten", wenn der Dienst weiterlaeuft. Bis 0.9.25 stand hier
+             * trotzdem "angehalten" (in WSL gemessen, 28.09.2026). */
+            if ($eb_rc === 0) {
                 $eb_meldungen[] = eb_t($eb_befehl === 'start' ? 'DIENST.GESTARTET'
                     : ($eb_befehl === 'stop' ? 'DIENST.ANGEHALTEN' : 'DIENST.NEUGESTARTET'));
             } else {
@@ -174,7 +189,11 @@ if ($eb_post && isset($_POST['vorlage_quellen'])) {
          * andere bleibt unberuehrt. Ohne diese Wahl liesse sich der
          * Ersatzzaehler ueberhaupt nicht aus einer Vorlage fuellen. */
         $eb_ziel = isset($_POST['vq_ziel']) ? (string) $_POST['vq_ziel'] : 'vorlage';
-        if (!in_array($eb_ziel, array('vorlage', 'ersatz'), true)) { $eb_ziel = 'vorlage'; }
+        if (!in_array($eb_ziel, array('vorlage', 'ersatz'), true)) {
+            $eb_fehler[] = eb_t('VORLAGE.UNBEKANNT');
+            $eb_v['quellen'] = array();
+            $eb_ziel = 'nichts';
+        }
         if ($eb_ziel === 'ersatz') {
             if (!isset($eb_v['quellen']['q_netz'])) {
                 $eb_fehler[] = eb_t('VORLAGE.OHNE_NETZ');
@@ -218,11 +237,15 @@ if ($eb_post && isset($_POST['vorlage_quellen'])) {
 if ($eb_post && isset($_POST['speichern'])) {
     $eb_cfg = eb_config();
 
-    /* Nur Steuerzeichen und Anfuehrungszeichen entfernen - ein hartes
-     * preg_replace auf eine Positivliste zerstoert eingefuegte Werte
-     * (belegt am ACTi-Plugin am 26.07.2026). */
+    /* Nur Steuerzeichen entfernen - ein hartes preg_replace auf eine
+     * Positivliste zerstoert eingefuegte Werte (belegt am ACTi-Plugin am
+     * 26.07.2026). Anfuehrungszeichen bleiben seit 0.9.26 stehen: bis
+     * dahin machte schon ein unveraendertes Speichern aus dem in der Hilfe
+     * empfohlenen Inhalt {"limit":{W}} ein {limit:{W}}, und der Dienst
+     * schickte das als JSON. Jeder Wert geht maskiert in die Seite (eb_e),
+     * in Vorlagen (eb_x) und an die Kommandozeile (escapeshellarg). */
     $eb_sauber = function ($s) {
-        return trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $s));
+        return trim(preg_replace('/[\x00-\x1F\x7F]/', '', (string) $s));
     };
     $eb_wert = function ($name, $vorgabe = '') use ($eb_sauber) {
         return isset($_POST[$name]) ? $eb_sauber($_POST[$name]) : $vorgabe;
@@ -239,7 +262,13 @@ if ($eb_post && isset($_POST['speichern'])) {
             $eb_fehler[] = sprintf(eb_t('FEHLER.KEINE_ZAHL'), $bez, $roh);
             return null;
         }
-        $w = (int) round((float) $roh);
+        /* Eine Kommazahl wird abgewiesen, nicht gerundet: bis 0.9.25 wurde
+         * aus soc_max 100.4 still 100 und aus takt 7.4 still 7. */
+        if ((float) $roh != floor((float) $roh)) {
+            $eb_fehler[] = sprintf(eb_t('FEHLER.KEINE_GANZE_ZAHL'), $bez, $roh);
+            return null;
+        }
+        $w = (int) $roh;
         if ($w < $von || $w > $bis) {
             $eb_fehler[] = sprintf(eb_t('FEHLER.AUSSERHALB'), $bez, $roh, $von, $bis);
             return null;
@@ -295,7 +324,10 @@ if ($eb_post && isset($_POST['speichern'])) {
             } else {
                 $q['faktor'] = (float) $f;
             }
-            if (!isset($eb_qarten[$q['art']])) { $q['art'] = 'aus'; }
+            if (!isset($eb_qarten[$q['art']])) {
+                $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), eb_t($eb_bez), $q['art']);
+                $q['art'] = 'aus';
+            }
             if ($q['art'] !== 'aus' && $q['adresse'] === '') {
                 $eb_fehler[] = sprintf(eb_t('FEHLER.QUELLE_OHNE_ADRESSE'), eb_t($eb_bez));
             }
@@ -314,9 +346,15 @@ if ($eb_post && isset($_POST['speichern'])) {
             $s['inhalt'] = $eb_reihe('s_inhalt', $eb_i);
             $s['einheit'] = $eb_reihe('s_einheit', $eb_i);
             $s['stilllegen'] = !empty($_POST['s_still'][$eb_i]) ? 1 : 0;
-            if (!isset($eb_sarten[$s['art']])) { $s['art'] = 'aus'; }
-            if (!isset($eb_einh[$s['einheit']])) { $s['einheit'] = 'W'; }
             $bez = eb_t('STELL.STELLER') . ' ' . ($eb_i + 1);
+            if (!isset($eb_sarten[$s['art']])) {
+                $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), $bez, $s['art']);
+                $s['art'] = 'aus';
+            }
+            if (!isset($eb_einh[$s['einheit']])) {
+                $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), $bez, $s['einheit']);
+                $s['einheit'] = 'W';
+            }
             foreach (array('spitze_w' => array('s_spitze', 0, 1000000),
                            'anteil' => array('s_anteil', 0, 100),
                            'auffrisch_s' => array('s_auffrisch', 0, 86400)) as $eb_f => $eb_d) {
@@ -354,8 +392,14 @@ if ($eb_post && isset($_POST['speichern'])) {
     $sp['inhalt'] = $eb_wert('sp_inhalt');
     $sp['einheit'] = $eb_wert('sp_einheit', 'W');
     $sp['stilllegen'] = !empty($_POST['sp_still']) ? 1 : 0;
-    if (!isset($eb_sarten[$sp['art']])) { $sp['art'] = 'aus'; }
-    if (!isset($eb_einh[$sp['einheit']])) { $sp['einheit'] = 'W'; }
+    if (!isset($eb_sarten[$sp['art']])) {
+        $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), eb_t('STELL.SPEICHER'), $sp['art']);
+        $sp['art'] = 'aus';
+    }
+    if (!isset($eb_einh[$sp['einheit']])) {
+        $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), eb_t('STELL.SPEICHER'), $sp['einheit']);
+        $sp['einheit'] = 'W';
+    }
     $w = $eb_zahl_pruef($eb_wert('sp_spitze'), 0, 1000000,
                         eb_t('STELL.SPEICHER') . ' / ' . eb_t('STELL.L_SPITZE_W'));
     if ($w !== null) { $sp['spitze_w'] = $w; }
@@ -406,7 +450,10 @@ if ($eb_post && isset($_POST['speichern'])) {
         } elseif (!preg_match('#^[a-zA-Z0-9_\-/]+$#', $eb_thema)) {
             // Ein Thema mit + oder # ist ein Filtermuster und als Ziel unbrauchbar.
             $eb_fehler[] = sprintf(eb_t('FEHLER.THEMA'), $eb_thema);
-        } elseif ($eb_thema !== strtolower($eb_thema)) {
+        } elseif ($eb_thema !== strtolower($eb_thema) && $eb_thema !== (string) $eb_cfg['mqtt_topic']) {
+            /* Nur ein NEUES Thema mit Grossbuchstaben wird angehalten. Bis
+             * 0.9.25 auch das schon gespeicherte - dann liess sich der Reiter
+             * MQTT gar nicht mehr speichern, auch nicht zum Ausschalten. */
             /* Grossbuchstaben sind in einem MQTT-Thema zulaessig - aber
              * ein still kleingeschriebenes Thema ist ein anderes Thema.
              * Also melden und den Anwender entscheiden lassen. */
@@ -506,7 +553,7 @@ if ($eb_post && isset($_POST['eb_zurueck'])) {
          * zweites Mal darin - als waeren es Einschalthindernisse.
          * Dazu kommt: eb_maengel() liefert SCHLUESSEL, diese Funktion
          * fertige Texte. */
-        list($eb_neu, $eb_sich_mangel, $eb_n) = eb_sicherung_lesen(
+        list($eb_neu, $eb_sich_mangel, $eb_n, $eb_sich_hinweis) = eb_sicherung_lesen(
             (string) @file_get_contents($_FILES['eb_sicherung']['tmp_name']));
         if ($eb_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
@@ -515,6 +562,17 @@ if ($eb_post && isset($_POST['eb_zurueck'])) {
                             . implode(' ', $eb_sich_mangel);
         } elseif (eb_config_speichern($eb_neu)) {
             $eb_meldungen[] = sprintf(eb_t('EINST.SICH_UEBERNOMMEN'), $eb_n);
+            foreach ($eb_sich_hinweis as $eb_h) { $eb_meldungen[] = $eb_h; }
+            /* Wie beim Speichern: die Abo-Datei auf den zurueckgespielten
+             * Praefix bringen - bis 0.9.25 geschah das hier nicht. */
+            eb_abo_datei($eb_neu['mqtt_topic'], true);
+            eb_log('Einstellungen aus einer Sicherung zurueckgespielt (' . $eb_n . ' Werte).');
+            /* Was mit dem Dienst geschieht (Hausstandard): er liest die
+             * Konfiguration in jedem Takt neu (eb_dienst.php), ein Neustart
+             * ist nicht noetig. Das wird gesagt, nicht verschwiegen. */
+            $eb_meldungen[] = eb_dienst_pid() > 0
+                ? sprintf(eb_t('EINST.SICH_DIENST_LAEUFT'), (int) $eb_neu['takt'])
+                : eb_t('EINST.SICH_DIENST_STEHT');
             /* Die Anzeige neu holen. $eb_cfg wurde weiter oben aus der
              * Datei gefuellt; ohne dieses Nachlesen zeigte die Seite nach
              * dem Zurueckspielen weiter den ALTEN Stand in jedem Feld -
@@ -528,6 +586,22 @@ if ($eb_post && isset($_POST['eb_zurueck'])) {
     }
 }
 
+
+/* ---------------- Nach dem POST: umleiten ----------------
+ * Regeln/04 (Docker NG, 06.09.2026): jeder POST endet mit 303, das
+ * Ergebnis reist als Einmalmeldung. Bis 0.9.25 wurde die Seite direkt
+ * nach dem POST gerendert; ein Neuladen ("Formular erneut senden")
+ * wuerfelte nach "Neues Wortzeichen" das Aktionstoken ein zweites Mal -
+ * gemessen ueber php -S, 28.09.2026 - und jede in Loxone eingetragene
+ * Adresse bekam danach 403.
+ * Einzige Ausnahme, bewusst: ein ABGEWIESENES Speichern rendert direkt.
+ * Es hat nichts geschrieben, ein Neuladen wiederholt nur die Abweisung,
+ * und die eingetippten Werte bleiben zum Berichtigen stehen. */
+if ($eb_post && !(isset($_POST['speichern']) && $eb_fehler)) {
+    eb_einmal_schreiben($eb_meldungen, $eb_fehler, $eb_testausgabe);
+    header('Location: index.php?form=' . rawurlencode(substr($eb_tab, 4)), true, 303);
+    exit;
+}
 
 if ($eb_rahmen) {
     LBWeb::lbheader(eb_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
@@ -662,10 +736,10 @@ if ($eb_rahmen) {
 <?php } ?>
 
 <?php if ($eb_meldungen) { ?>
-<div class="sm-hinweis"><?= implode('<br>', array_map('eb_e', $eb_meldungen)) ?></div>
+<div class="sm-hinweis"><?= implode('<br>', array_map('eb_meldung_e', $eb_meldungen)) ?></div>
 <?php } ?>
 <?php if ($eb_fehler) { ?>
-<div class="sm-warnung"><b><?= eb_e(eb_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('eb_e', $eb_fehler)) ?></div>
+<div class="sm-warnung"><b><?= eb_e(eb_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('eb_meldung_e', $eb_fehler)) ?></div>
 <?php } ?>
 
 <div class="sm-kacheln">

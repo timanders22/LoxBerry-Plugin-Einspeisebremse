@@ -203,13 +203,24 @@ marke_gilt() {
 case "$1" in
     start)
         if [ "$INSTALLIERT" != "1" ]; then nicht_installiert; exit 1; fi
+        # Zwei gleichzeitige Starts (Waechter, Oberflaeche, postinstall) ergaben
+        # bis 0.9.25 zwei Dienste: beide sahen "laeuft nicht", beide starteten.
+        # Gesperrt wird auf diesem Skript selbst - es liegt immer da, und kein
+        # Ordner muss dafuer angelegt werden (die Marke unten verlangt, dass
+        # waehrend einer Installation nichts im Datenordner entsteht). Der
+        # Dienst bekommt den Griff NICHT vererbt (8<&- unten), sonst hielte er
+        # die Sperre, solange er laeuft.
+        if command -v flock >/dev/null 2>&1; then
+            exec 8<"$0"
+            flock -w 15 8 || { echo "Ein anderer Start laeuft noch - abgebrochen."; exit 1; }
+        fi
         if laeuft; then echo "Einspeisebremse laeuft bereits (PID $(cat "$PIDF"))."; exit 0; fi
         if marke_gilt; then
             echo "Eine Installation laeuft - der Dienst wird danach gestartet."
             exit 0
         fi
         mkdir -p "$DATA" "$LOG"
-        nohup "$PHPBIN" "$SKRIPT" >> "$LOG/dienst.out" 2>&1 &
+        nohup "$PHPBIN" "$SKRIPT" >> "$LOG/dienst.out" 2>&1 8<&- &
         echo $! > "$PIDF"
         sleep 1
         if laeuft; then echo "Einspeisebremse gestartet (PID $(cat "$PIDF"))."; exit 0; fi

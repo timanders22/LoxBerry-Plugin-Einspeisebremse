@@ -361,7 +361,8 @@ function eb_active_serverseitig()
  */
 function eb_suchtexte_eindeutig()
 {
-    $zeile = eb_zeile(eb_stand());
+    $eb_st = eb_stand();
+    $zeile = eb_zeile($eb_st);
     /* Die Felder kommen aus der VORLAGE, nicht aus der Antwort. Bis 0.9.19
      * wurden sie mit ;NAME= aus der Antwort gezogen - ein Feld, dessen
      * Suchtext nie trifft, fehlte damit auch in der Pruefung (ERSATZ). */
@@ -377,6 +378,13 @@ function eb_suchtexte_eindeutig()
          * das ist die Frage, und sie wird am Ergebnis gestellt, nicht an
          * einer Namensliste. */
         $muster = str_replace(array('\i', '\v'), '', eb_check($a));
+        /* Ein Stellgliedfeld, das noch nie gestellt wurde, steht nicht in
+         * der Antwort - das ist kein Doppeltreffer. Bis 0.9.25 zeigte die
+         * Zeile dann ein Kreuz fuer S1W bis S2OK (Fehlalarm, 28.09.2026). */
+        if (substr_count($zeile, $muster) === 0 && preg_match('/^S([0-9]+)(W|OK)$/', $a, $eb_sm)
+            && !isset($eb_st['steller'][$eb_sm[1]])) {
+            continue;
+        }
         if (substr_count($zeile, $muster) !== 1) {
             $stoss[] = $a;
             continue;
@@ -439,13 +447,8 @@ function eb_endpunkt_selftest($token)
      * nur, wenn etwas nicht stimmt - und dann soll man nicht minutenlang
      * vor einer leeren Seite sitzen. */
     $ctx = stream_context_create(array('http' => array('timeout' => 3, 'ignore_errors' => true)));
-    $t = @file_get_contents($url, false, $ctx);
-    $code = 0;
-    if (isset($http_response_header) && is_array($http_response_header)) {
-        foreach ($http_response_header as $z) {
-            if (preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) { $code = (int) $m[1]; }
-        }
-    }
+    /* Code aus den Kopfzeilen ueber eb_http_abruf() (PHP 8.5, siehe dort). */
+    list($t, $code) = eb_http_abruf($url, $ctx);
     return array($code, $t === false ? '' : trim((string) $t));
 }
 

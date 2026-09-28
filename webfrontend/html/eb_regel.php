@@ -53,6 +53,9 @@ function eb_zahl($wert, $vorgabe = 0.0)
 function eb_messwert_taugt($roh, $grenze_w = 200000.0)
 {
     if ($roh === null || $roh === '' || is_bool($roh)) { return array(0, 'fehlt'); }
+    /* Ein Pfad, der auf ein Objekt statt auf eine Zahl zeigt
+     * ("Body.Data.Site"), galt bis 0.9.25 als gut gemessen. */
+    if (is_array($roh) || is_object($roh)) { return array(0, 'unlesbar'); }
     $s = is_string($roh) ? str_replace(',', '.', trim($roh)) : $roh;
     if (is_string($s) && !is_numeric($s)) { return array(0, 'unlesbar'); }
     $w = (float) $s;
@@ -367,6 +370,15 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
          * schreiben jede empfangene Grenze in ihren Flash. Freigegeben ist
          * nur, was die Grenze wirklich hebt. */
         if ($anlage_max > 0.0) { $neu_w = min($neu_w, $anlage_max); }
+        /* Ueber den Freigabewert hinaus gibt es nichts freizugeben - er ist
+         * genau das, was beim Ausschalten gestellt wird. Ohne diesen Deckel
+         * stieg die Grenze bei unbekannter Erzeugung (Fronius P_PV nachts
+         * null) und ohne Spitzenleistung je Takt um rampe_auf_w, gemessen
+         * 217375 W nach einer Stunde, 720 Stellbefehle (28.09.2026). Wie
+         * die Freigabe ohne gemessene Erzeugung ueberhaupt enden soll,
+         * entscheidet der Hausherr; das hier ist nur die Obergrenze. */
+        $frei_max = eb_zahl(isset($cfg['frei_w']) ? $cfg['frei_w'] : 0, 0.0);
+        if ($frei_max > 0.0) { $neu_w = min($neu_w, $frei_max); }
         if ($neu_w > $drossel_alt) {
             $erg['drossel_w'] = $neu_w;
             $erg['tat'] = EB_FREIGABE;

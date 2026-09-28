@@ -75,10 +75,29 @@ EBD="$BASE/bin/plugins/$PFOLDER/eb_dienst.php"
 if [ -f "$CF" ] && [ -f "$EBD" ] && command -v php >/dev/null 2>&1; then
     # Regelung ausschalten und EINEN Durchlauf abwarten: der gibt die
     # Anlage frei. Erst danach wird der Dienst beendet.
-    php -r '$f=$argv[1]; $d=json_decode(file_get_contents($f),true);
-            if(!is_array($d)){exit(1);} $d["ein"]=0;
-            file_put_contents($f, json_encode($d));' "$CF" 2>/dev/null
-    if php "$EBD" --einmal >/dev/null 2>&1; then
+    # ein=0 auch in der Zweitschrift: ist die Konfiguration kaputt, heilt
+    # eb_config() sie aus der Zweitschrift - bis 0.9.25 stand dort ein=1,
+    # und der Freigabe-Durchlauf regelte weiter (WSL, Fall D3, 28.09.2026).
+    for EB_F in "$CF" "$BASE/config/plugins/$PFOLDER.backup.json"; do
+        [ -f "$EB_F" ] || continue
+        php -r '$f=$argv[1]; $d=json_decode(file_get_contents($f),true);
+                if(!is_array($d)){exit(1);} $d["ein"]=0;
+                file_put_contents($f, json_encode($d));' "$EB_F" 2>/dev/null
+    done
+    # Mit Zeitgrenze wie --mqtt-leeren unten: ein haengender Aufruf liess die
+    # Deinstallation bis 0.9.25 ohne Ende stehen (WSL, Fall D4). Der
+    # Rueckgabewert sagt seit 0.9.26, ob die Freigabe alle Stellglieder
+    # erreicht hat - vorher war er immer 0.
+    if command -v timeout >/dev/null 2>&1; then EB_ZEIT="timeout -k 5 60"; else EB_ZEIT=""; fi
+    $EB_ZEIT php "$EBD" --einmal >/dev/null 2>&1
+    EB_RC=$?
+    # Die WIRKUNG entscheidet: stand.json schreibt der Durchlauf vor dem
+    # MQTT-Versand. Haengt danach nur der Versand und greift die
+    # Zeitgrenze, ist die Anlage trotzdem freigegeben (WSL, Fall D4).
+    EB_FREI=$(php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+                      echo (is_array($d) && !empty($d["freigegeben"])) ? 1 : 0;' \
+              "$BASE/data/plugins/$PFOLDER/stand.json" 2>/dev/null)
+    if [ "$EB_RC" = "0" ] || [ "$EB_FREI" = "1" ]; then
         echo "<OK> Die Anlage wurde freigegeben."
     else
         echo "<INFO> Die Freigabe konnte nicht abgeschickt werden."

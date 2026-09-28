@@ -232,7 +232,7 @@ function eb_json_pfad($daten, $pfad)
  * nur auf false prueft, verbucht die Abweisung eines Geraets als
  * abgesetzten Befehl - gemessen am 18.08.2026 am laufenden Dienst: ein
  * Wechselrichter, der mit 404 antwortete, meldete dem Miniserver S1OK=1.
- * Der Code steht in $http_response_header und wird jetzt gelesen.
+ * Den Code liefert eb_http_abruf() aus den Kopfzeilen des Stroms.
  */
 /* Die Antworten eines Durchlaufs. Ein Fronius Symo liefert Netzleistung,
  * Erzeugung, Ladestand und Ladeleistung aus DERSELBEN Adresse - ohne
@@ -258,14 +258,8 @@ function eb_http_holen($url, $zeit = 5, &$status = null, $merken = false)
     $ctx = stream_context_create(array('http' => array(
         'timeout' => $zeit, 'ignore_errors' => true,
         'header' => "Accept: application/json\r\n")));
-    $t = @file_get_contents($url, false, $ctx);
-    if (isset($http_response_header) && is_array($http_response_header)) {
-        foreach ($http_response_header as $zeile) {
-            if (preg_match('#^HTTP/\S+\s+([0-9]{3})#', $zeile, $tr)) {
-                $status = (int) $tr[1];
-            }
-        }
-    }
+    /* Code aus den Kopfzeilen ueber eb_http_abruf() (PHP 8.5, siehe dort). */
+    list($t, $status) = eb_http_abruf($url, $ctx);
     $erg = ($t === false) ? null : $t;
     if ($merken) { $eb_http_zwischen[$url] = array($erg, $status); }
     return $erg;
@@ -329,7 +323,11 @@ function eb_modbus_lesen($adresse, $zeit = 4)
         $daten .= $st;
     }
     @fclose($fp);
-    if (strlen($daten) < $n || $n < 2) { return array(null, 'zu_kurz'); }
+    /* So viele Bytes, wie der Typ braucht - nicht nur zwei. Bis 0.9.25
+     * wurde eine Antwort mit zwei Bytes fuer float32/int32 zu 0.0 mit
+     * Anlass "gut" (unpack auf zu kurzem Text, 28.09.2026). */
+    $braucht = in_array($a['typ'], array('int16', 'uint16'), true) ? 2 : 4;
+    if (strlen($daten) < $n || $n < $braucht) { return array(null, 'zu_kurz'); }
 
     /* Hohes Wort zuerst - so liefert es der SDM630 und die meisten Zaehler. */
     switch ($a['typ']) {
@@ -843,13 +841,7 @@ function eb_stellen($s, $watt)
             'method' => 'POST', 'timeout' => 8, 'ignore_errors' => true,
             'header' => "Content-Type: application/json\r\n",
             'content' => $inhalt)));
-        $t = @file_get_contents($adresse, false, $ctx);
-        $st = 0;
-        if (isset($http_response_header) && is_array($http_response_header)) {
-            foreach ($http_response_header as $zeile) {
-                if (preg_match('#^HTTP/\S+\s+([0-9]{3})#', $zeile, $tr)) { $st = (int) $tr[1]; }
-            }
-        }
+        list($t, $st) = eb_http_abruf($adresse, $ctx);
         $kurz = 'POST ' . $adresse . ' ' . substr($inhalt, 0, 80);
         if ($t === false) { return array(0, $kurz . ' - keine Antwort'); }
         if (!eb_http_gut($st)) { return array(0, $kurz . ' - abgewiesen mit HTTP ' . $st); }
@@ -908,6 +900,23 @@ function eb_durchlauf($cfg, $stand)
         }
     }
 
+    /* ---- Der letzte gute Zaehlerwert, bis notfall_s ----
+     * Ein HTTP- oder Modbus-Zaehler liefert bei einem einzigen misslungenen
+     * Abruf null. Bis 0.9.25 hiess das alter_s = -1, und der Kern ging im
+     * SELBEN Takt in den Notbetrieb (bei notfall_w 0 also auf 0 W) - obwohl
+     * README, Hilfe und der Mangel NOTFALL_ZU_KURZ "nach notfall_s"
+     * versprechen. Jetzt gilt fuer alle Quellenarten dasselbe wie bei MQTT:
+     * der letzte gute Wert mit seinem wahren Alter, und erst wenn das
+     * notfall_s uebersteigt, greift die Totmannschaltung. */
+    $netz_gut_um = isset($stand['netz_gut_um']) ? (float) $stand['netz_gut_um'] : 0.0;
+    if ($netz !== null) {
+        $netz_gut_um = $jetzt - max(0.0, (float) $netz_alter);
+    } elseif ($netz_gut_um > 0.0 && isset($stand['netz_gut_wert']) && is_numeric($stand['netz_gut_wert'])) {
+        $netz = (float) $stand['netz_gut_wert'];
+        $netz_alter = max(0.0, $jetzt - $netz_gut_um);
+        $netz_anlass = 'letzter_wert_' . $netz_anlass;
+    }
+
     /* ---- Die gewaehlte Zielstufe ----
      * Der Kern kennt nur ein ziel_w. Welche der drei eingetragenen Stufen
      * das gerade ist, entscheidet sich hier - und ausschliesslich aus der
@@ -951,6 +960,10 @@ function eb_durchlauf($cfg, $stand)
         'sp_probe_seit' => isset($stand['sp_probe_seit']) ? $stand['sp_probe_seit'] : 0,
         'sp_probe_lade' => isset($stand['sp_probe_lade']) ? $stand['sp_probe_lade'] : 0,
         'sp_sperre_bis' => isset($stand['sp_sperre_bis']) ? $stand['sp_sperre_bis'] : 0,
+        /* Das letzte Urteil der Wirkungspruefung. Fehlte bis 0.9.25 - die
+         * Zeile "KEINE WIRKUNG" erschien deshalb bei jedem Urteil statt
+         * nur beim Wechsel. */
+        'wirkung'       => isset($stand['wirkung']) ? (int) $stand['wirkung'] : 0,
     );
     if ($drossel_start !== null) { $zust['drossel_w'] = $drossel_start; }
 
@@ -997,7 +1010,22 @@ function eb_durchlauf($cfg, $stand)
         'grenze_vorher' => isset($stand['grenze_vorher']) ? $stand['grenze_vorher'] : null,
         'frei_versuch'  => isset($stand['frei_versuch']) ? (int) $stand['frei_versuch'] : 0,
         'frei_zuletzt'  => isset($stand['frei_zuletzt']) ? (float) $stand['frei_zuletzt'] : 0.0,
+        'netz_gut_um'   => $netz_gut_um,
+        'netz_gut_wert' => ($netz !== null && strpos((string) $netz_anlass, 'letzter_wert_') !== 0)
+                           ? $netz : (isset($stand['netz_gut_wert']) ? $stand['netz_gut_wert'] : null),
     );
+
+    /* Nur Stellglieder, die es noch gibt. Die Liste kommt aus dem alten
+     * Stand und wurde bis 0.9.25 nur bei Freigabe oder geaenderter Grenze
+     * neu gebaut - ein geleertes Stellglied wurde weiter gemeldet, sein
+     * Name blieb retained im Broker (WSL, 28.09.2026). */
+    foreach (array_keys($neu['steller']) as $eb_k) {
+        if (!isset($steller[(int) $eb_k])
+            || !isset($neu['steller'][$eb_k]['name'])
+            || (string) $neu['steller'][$eb_k]['name'] !== (string) $steller[(int) $eb_k]['name']) {
+            unset($neu['steller'][$eb_k]);
+        }
+    }
 
     /* ---- Ausgeschaltet heisst ausgeschaltet ----
      * Dann wird gemessen und angezeigt, aber nicht mehr geregelt. Wer eine
@@ -1093,7 +1121,14 @@ function eb_durchlauf($cfg, $stand)
     $wert_neu = ($grenze_alt === null
                  || (int) round($r['drossel_w']) !== (int) round($grenze_alt));
     $stellen = $wert_neu;
-    $fenster = ($r['tat'] === EB_DROSSEL || $r['tat'] === EB_FREIGABE || $wert_neu);
+    /* Gemessen wird nur nach einer SENKUNG: eb_wirkung() fragt, ob die
+     * Einspeisung danach gesunken ist. Nach einer Freigabe steigt sie -
+     * gewollt -, und bis 0.9.25 stand dann nach jeder gelungenen Freigabe
+     * "KEINE WIRKUNG" im Protokoll. Eine Freigabe beendet ein offenes
+     * Fenster, statt es zu beurteilen. */
+    $gesenkt = ($grenze_alt !== null && (int) round($r['drossel_w']) < (int) round($grenze_alt));
+    $fenster = ($r['tat'] === EB_DROSSEL || $gesenkt);
+    if ($r['tat'] === EB_FREIGABE && !$gesenkt) { $neu['gestellt_um'] = 0; $neu['wirkung'] = 0; }
     $anteile = eb_aufteilen($r['drossel_w'], $steller);
     $gestellt_jetzt = array();
 
@@ -1169,7 +1204,10 @@ function eb_durchlauf($cfg, $stand)
         $neu['gestellt_um'] = $jetzt;
         $neu['netz_vorher'] = ($netz === null) ? null : -$netz;   // Einspeisung vorher
         $neu['grenze_vorher'] = $grenze_alt;
-        $neu['wirkung'] = 0;
+        /* Das letzte Urteil bleibt stehen, bis ein neues gefaellt ist. Bis
+         * 0.9.25 ging es hier bei jedem neuen Fenster auf 0 - folgte das
+         * Geraet dauerhaft nicht, stand WIRKUNG=-1 nur in 6 von 40 Takten,
+         * und die Zeile KEINE WIRKUNG kam sechsmal (28.09.2026). */
     }
 
     /* ---- Stellglieder mit Zeitablauf auffrischen ----
@@ -1330,8 +1368,29 @@ function eb_durchlauf($cfg, $stand)
 function eb_mqtt_abraeumen($praefix)
 {
     $n = 0;
+    /* Erst am Broker nachsehen, wie --mqtt-leeren. Bis 0.9.25 gingen beim
+     * Dienststart 28 leere Retain-Nachrichten hinaus, auch auf Themen, die
+     * gar nichts zurueckbehielten; das Gateway reicht eine leere Nachricht
+     * als leeren Wert an den Miniserver weiter (Regeln/07). Laesst sich
+     * nicht feststellen, was steht, wird diesmal nichts abgeraeumt. */
+    $stehend = eb_mqtt_behalten_lesen($praefix, eb_broker());
+    if ($stehend === null) {
+        eb_log_wenn_neu('abraeumen_unbekannt', 'MQTT: welche Themen unter ' . $praefix
+            . '/ zurueckbehalten sind, liess sich nicht feststellen - beim Start wurde nichts abgeraeumt.');
+        return 0;
+    }
+    $aktiv = eb_steller();
     foreach (eb_mqtt_eigene_namen() as $name) {
-        if (eb_mqtt_retained($name)) { continue; }
+        if (eb_mqtt_retained($name)) {
+            /* Retained Themen bleiben - AUSSER denen eines Stellglieds, das
+             * es nicht mehr gibt. Sonst stand dessen Name fuer immer im
+             * Broker (WSL, 28.09.2026: "steller1/name WR Test" nach dem
+             * Leeren von Stellglied 1). */
+            if (!(preg_match('#^steller([0-9]+)/#', $name, $eb_m) && !isset($aktiv[(int) $eb_m[1]]))) {
+                continue;
+            }
+        }
+        if (!in_array($name, $stehend, true)) { continue; }
         if (eb_mqtt_veroeffentlichen($praefix . '/' . $name, null, true)) { $n++; }
     }
     return $n;
@@ -1814,7 +1873,10 @@ if ($eb_hat('--einmal')) {
     eb_veroeffentlichen($cfg, $neu);
     echo eb_zeile($neu);
     eb_hoerer_beenden();
-    exit(0);
+    /* Die Deinstallation wertet den Rueckgabewert aus. Bis 0.9.25 immer 0 -
+     * "<OK> Die Anlage wurde freigegeben" auch dann, wenn das eigene
+     * Protokoll derselben Sekunde "keine Antwort" schrieb. */
+    exit((empty($cfg['ein']) && eb_steller() && empty($neu['freigegeben'])) ? 1 : 0);
 }
 
 /* ---- Dauerbetrieb ---- */
@@ -1825,6 +1887,10 @@ if (function_exists('pcntl_signal')) {
     pcntl_signal(SIGINT, function () { global $eb_laeuft; $eb_laeuft = false; });
 }
 
+/* Ein Dienst, nicht zwei: das sichert dienst.sh (flock beim Start). Eine
+ * zweite Sperre HIER ist bewusst nicht eingebaut - der Dateigriff erbte
+ * sich an den MQTT-Zuhoerer (proc_open), und ueberlebte der den Dienst,
+ * startete keiner mehr (WSL, 28.09.2026). */
 $eb_cfg = eb_config();
 /* Regeln/05: fehlende Schluessel beim Dienststart einmal mit ihrer Vorgabe
  * in die Datei schreiben. Am 17.09.2026 am Geraet: 30 von 32 Schluesseln,

@@ -7,15 +7,12 @@
 # es zusaetzlich aufrufen, liefe es ZWEIMAL, mit allem, was darin nicht
 # idempotent ist.
 #
-# Was hier bleibt: das zwischengespeicherte Abbild verwerfen. Aendert sich
-# der Aufbau von stand.json zwischen zwei Fassungen, zeigte die Oberflaeche
-# sonst bis zum naechsten Durchlauf alte Felder - oder rechnete damit.
-#
-# Die zuletzt GESTELLTE Grenze geht damit aus dem Gedaechtnis verloren, nicht
-# aber aus der Anlage: die Wechselrichter behalten ihren Wert, denn es wird
-# ja nichts gesendet. Der erste Durchlauf nach dem Upgrade misst neu und
-# entscheidet neu - eine Auflage kann in dieser Luecke nicht verletzt
-# werden, weil in ihr nichts freigegeben wird.
+# Seit 0.9.26 loescht dieses Skript stand.json NICHT mehr. Bis 0.9.25 tat
+# es das, um ein altes Abbild zu verwerfen - aber der Installer hat den
+# Datenordner vorher ohnehin geleert, und postinstall.sh hat den NEUEN
+# Dienst schon gestartet: geloescht wurde also dessen frischer Stand. In
+# WSL gemessen (28.09.2026, Fall U5): bei ein=0 gingen danach zwei
+# Freigaben im Abstand von 5 s hinaus, obwohl vorher freigegeben war.
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-einspeisebremse}"
@@ -59,6 +56,5 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
     echo "<WARNING> Es wurde nichts entfernt."
     exit 1
 fi
-rm -f "$BASE/data/plugins/$PFOLDER/stand.json"
-echo "<OK> postupgrade abgeschlossen - beim naechsten Durchlauf wird frisch gemessen."
+echo "<OK> postupgrade abgeschlossen."
 exit 0

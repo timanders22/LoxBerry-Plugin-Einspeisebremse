@@ -282,8 +282,12 @@ function eb_json_schreiben($pfad, $daten, $rechte = null)
     $fh = @fopen($tmp, 'c');
     if ($fh === false) { return false; }
     if ($rechte !== null) { @chmod($tmp, $rechte); }
-    $ok = ftruncate($fh, 0) && fwrite($fh, $json) !== false;
-    fflush($fh);
+    /* Geschrieben ist erst, was GANZ geschrieben ist. fwrite() liefert bei
+     * voller Karte eine kleinere Zahl, nicht false - in WSL gemessen
+     * (ulimit -f 1, 28.09.2026): 1024 von 18848 Byte, Rueckgabe true, und
+     * rename() ersetzte die heile Datei durch die abgeschnittene. */
+    $n = ftruncate($fh, 0) ? fwrite($fh, $json) : false;
+    $ok = ($n === strlen($json)) && fflush($fh);
     fclose($fh);
     if (!$ok) { @unlink($tmp); return false; }
     if (!@rename($tmp, $pfad)) { @unlink($tmp); return false; }
@@ -310,6 +314,10 @@ function eb_modbus_zerlegen($adresse)
     if ($port < 1 || $port > 65535) { return null; }
     $id = (int) $t[3];
     if ($id < 0 || $id > 247) { return null; }
+    /* Ein Register hat 16 Bit Adresse. 70000 wurde bis 0.9.25 still zu
+     * 4464 (pack('n')) - ein fremdes Register, gelesen wie ein Messwert. */
+    $worte = (strpos($t[5], '32') !== false) ? 2 : 1;
+    if ((int) $t[4] + $worte - 1 > 65535) { return null; }
     return array(
         'host' => $t[1], 'port' => $port, 'id' => $id,
         'reg' => (int) $t[4], 'typ' => $t[5],
@@ -509,8 +517,18 @@ function eb_config_speichern($cfg)
         || $lage === 'kaputt' || $lage === 'kaputt ohne Zweitschrift') {
         return true;
     }
-    @copy($p['config'], $p['sicherung']);
-    @chmod($p['sicherung'], 0600);
+    /* Die Zweitschrift nur aus einem Stand, der sich zuruecklesen laesst
+     * und das Merkmal wirklich traegt. Bis 0.9.25 kopierte copy() die
+     * gerade geschriebene Datei ungeprueft - bei voller Karte war danach
+     * auch die Zweitschrift abgeschnitten (WSL, 28.09.2026). Geschrieben
+     * wird sie wie das Original: Rechte vor dem Inhalt, ueber eine
+     * Zwischendatei. */
+    $zurueck = json_decode((string) @file_get_contents($p['config']), true);
+    if (!is_array($zurueck) || !isset($zurueck['aktionstoken'])
+        || (string) $zurueck['aktionstoken'] !== (string) $cfg['aktionstoken']) {
+        return false;
+    }
+    eb_json_schreiben($p['sicherung'], $zurueck, 0600);
     return true;
 }
 
@@ -1112,7 +1130,7 @@ function eb_maengel($cfg)
         if ($a === '') { continue; }
         if ($s['art'] === 'sunspec') {
             $sa = eb_sunspec_zerlegen($s['adresse']);
-            if ($sa !== null) { $a = $sa['host'] . ':' . $sa['port'] . '/' . $sa['geraet']; }
+            if ($sa !== null) { $a = $sa['host'] . ':' . $sa['port'] . '/' . $sa['id']; }
         }
         $marke = $s['art'] . '|' . $a;
         if (isset($eb_stgesehen[$marke])) { $m[] = 'MANGEL.STELLER_DOPPELT'; }
@@ -1215,8 +1233,14 @@ function eb_dienst_pid()
      * ein grep faende auch die eigene Suche und jeden offenen Editor. */
     $cmd = @file_get_contents('/proc/' . $pid . '/cmdline');
     if ($cmd === false) { return 0; }
-    foreach (explode("\0", $cmd) as $teil) {
-        if (basename($teil) === 'eb_dienst.php') { return $pid; }
+    /* argv[0] ein PHP, argv[1] das Dienstskript - wie laeuft() in
+     * dienst.sh. Bis 0.9.25 genuegte ein beliebiges Argument, und ein
+     * "tail -f .../eb_dienst.php" galt als laufender Dienst (WSL,
+     * 28.09.2026), waehrend dienst.sh status richtig "steht" sagte. */
+    $argv = explode("\0", rtrim($cmd, "\0"));
+    if (count($argv) >= 2 && preg_match('/^php[0-9.]*$/', basename($argv[0])) === 1
+        && basename($argv[1]) === 'eb_dienst.php') {
+        return $pid;
     }
     return 0;
 }
@@ -1481,12 +1505,17 @@ function eb_xml_virtual_in_http($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp ';
+    /* HintText vorn, Info als erstes Kind, je Befehl Unit und HintText -
+     * wie die massgebliche Ausfuhr "VI_Marstek Speicher (LoxBerry-Plugin)_Test.xml"
+     * (Regeln/07, Abschnitt 5). Bis 0.9.25 fehlten alle drei; ohne Unit
+     * steht in Config eine nackte Zahl am Eingang. */
+    $o .= '<VirtualInHttp HintText="" ';
     $o .= 'Title="' . eb_x($kopf['title']) . '" ';
     $o .= 'Comment="' . eb_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . eb_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . eb_x(isset($kopf['polling']) ? $kopf['polling'] : '10') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . eb_x($c['title']) . '" ';
@@ -1500,7 +1529,9 @@ function eb_xml_virtual_in_http($kopf, $cmds)
         $o .= 'DestValHigh="1" ';
         $o .= 'DefVal="0" ';
         $o .= 'MinVal="' . eb_x(isset($c['min']) ? $c['min'] : '-100') . '" ';
-        $o .= 'MaxVal="' . eb_x(isset($c['max']) ? $c['max'] : '100') . '"';
+        $o .= 'MaxVal="' . eb_x(isset($c['max']) ? $c['max'] : '100') . '" ';
+        $o .= 'Unit="' . eb_x('<v>' . ((isset($c['unit']) && $c['unit'] !== '') ? ' ' . $c['unit'] : '')) . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -1558,9 +1589,76 @@ function eb_felder()
     );
 }
 
+/**
+ * Eine Adresse abrufen und den HTTP-Code aus den Kopfzeilen lesen.
+ * Rueckgabe: array(Inhalt oder false, Code; 0 = kein Code erkennbar).
+ *
+ * Seit 0.9.26 ueber fopen() und stream_get_meta_data() statt ueber
+ * die alte Kopfzeilen-Variable von PHP: 8.5 meldet sie schon beim
+ * Uebersetzen als ueberholt ("Deprecated", noch vor error_reporting()),
+ * und PHP 9 soll sie abschaffen - dann hiesse jeder Code 0. Die
+ * Ersatzfunktion http_get_last_response_headers() gibt es unter 7.4
+ * nicht, und schon ihre blosse Erwaehnung neben der alten Variable
+ * loeste die Meldung aus. Die Kopfzeilen im wrapper_data gibt es in
+ * beiden Fassungen; Zeitschranke und ignore_errors wirken ueber denselben
+ * Kontext wie bei file_get_contents().
+ */
+function eb_http_abruf($url, $ctx)
+{
+    $fp = @fopen($url, 'r', false, $ctx);
+    if ($fp === false) { return array(false, 0); }
+    $meta = @stream_get_meta_data($fp);
+    $t = @stream_get_contents($fp);
+    @fclose($fp);
+    $code = 0;
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) { $code = (int) $m[1]; }
+    }
+    return array($t, $code);
+}
+
 function eb_klartext($schluessel)
 {
     return trim(strip_tags(html_entity_decode(eb_t($schluessel), ENT_QUOTES, 'UTF-8')));
+}
+
+/**
+ * Eine Meldung fuer die maskierte Ausgabe: Auszeichnung weg, dann maskiert.
+ * 17 Sprachschluessel mit <b>/<span> liefen bis 0.9.25 durch eb_e() - der
+ * Anwender las rohe Tags (Vorlage anwenden, abgelehnte Sicherung, Maengel).
+ */
+function eb_meldung_e($t)
+{
+    return eb_e(trim(strip_tags(html_entity_decode((string) $t, ENT_QUOTES, 'UTF-8'))));
+}
+
+/**
+ * Einmalmeldung nach dem POST (Regeln/04): eine Datei im Datenordner,
+ * 0600 (die Testausgabe kann das Wortzeichen tragen), beim folgenden GET
+ * gelesen UND geloescht; aelter als 120 s wird verworfen.
+ */
+function eb_einmal_schreiben($meldungen, $fehler, $test)
+{
+    $p = eb_paths();
+    return eb_json_schreiben($p['datadir'] . '/einmalmeldung.json', array(
+        'zeit' => time(), 'meldungen' => array_values($meldungen),
+        'fehler' => array_values($fehler), 'test' => (string) $test), 0600);
+}
+
+function eb_einmal_lesen()
+{
+    $f = eb_paths()['datadir'] . '/einmalmeldung.json';
+    if (!is_file($f)) { return null; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) { return null; }
+    return array(
+        'meldungen' => isset($d['meldungen']) && is_array($d['meldungen']) ? $d['meldungen'] : array(),
+        'fehler' => isset($d['fehler']) && is_array($d['fehler']) ? $d['fehler'] : array(),
+        'test' => isset($d['test']) ? (string) $d['test'] : '',
+    );
 }
 
 function eb_endpunkt()
@@ -1605,6 +1703,7 @@ function eb_vorlage()
             'check'   => eb_check($feld),
             'min'     => $info[1],
             'max'     => $info[2],
+            'unit'    => $info[0],
         );
     }
     foreach (eb_steller() as $nr => $s) {
@@ -1619,6 +1718,7 @@ function eb_vorlage()
             'comment' => 'EB_' . $kurz . '_WATT - ' . eb_klartext('EB_FELD.S_WATT') . ' [W]',
             'check'   => eb_check('S' . $nr . 'W'),
             'min'     => 0, 'max' => 200000,
+            'unit'    => 'W',
         );
         $cmds[] = array(
             'title'   => sprintf(eb_klartext('EB_TITEL.S_OK'), $s['name']),
@@ -1776,6 +1876,46 @@ function eb_wert_taugt($w)
 }
 
 /**
+ * Ein Stellglied aus einer Sicherung: jedes Feld einzeln. Rueckgabe '' oder
+ * der Grund. Fehlende Felder sind erlaubt (eb_config() ergaenzt sie aus
+ * eb_steller_vorgabe()), falsche nicht.
+ */
+function eb_steller_feld_pruefen($s)
+{
+    if (!is_array($s)) { return 'kein Feld'; }
+    $bekannt = array_keys(eb_steller_vorgabe());
+    $bekannt[] = 'aktiv';   // Altlast bis 0.9.x, eb_config() entfernt es
+    foreach ($s as $f => $v) {
+        if (!in_array((string) $f, $bekannt, true)) { return 'unbekanntes Feld ' . $f; }
+        if (is_array($v) || is_object($v)) { return $f . ' ist kein einfacher Wert'; }
+        if (is_string($v) && preg_match('/[\x00-\x1F\x7F]/', $v) === 1) { return $f . ' mit Steuerzeichen'; }
+    }
+    if (isset($s['art']) && !isset(eb_stellarten()[(string) $s['art']])) { return 'Art ' . $s['art'] . ' unbekannt'; }
+    if (isset($s['einheit']) && !isset(eb_einheiten()[(string) $s['einheit']])) { return 'Einheit unbekannt'; }
+    foreach (array('spitze_w', 'anteil', 'auffrisch_s', 'stilllegen') as $f) {
+        if (isset($s[$f]) && !is_numeric($s[$f])) { return $f . ' keine Zahl'; }
+    }
+    return '';
+}
+
+/** Eine Messquelle aus einer Sicherung, Feld fuer Feld. */
+function eb_quelle_feld_pruefen($q)
+{
+    $bekannt = array_keys(eb_quelle_vorgabe());
+    foreach ($q as $f => $v) {
+        if (!in_array((string) $f, $bekannt, true)) { return 'unbekanntes Feld ' . $f; }
+        if (is_array($v) || is_object($v)) { return $f . ' ist kein einfacher Wert'; }
+        if (is_string($v) && preg_match('/[\x00-\x1F\x7F]/', $v) === 1) { return $f . ' mit Steuerzeichen'; }
+    }
+    if (isset($q['art']) && !isset(eb_quellarten()[(string) $q['art']])) { return 'Art ' . $q['art'] . ' unbekannt'; }
+    if (isset($q['faktor']) && !is_numeric($q['faktor'])) { return 'Faktor keine Zahl'; }
+    if (isset($q['invertieren']) && !in_array($q['invertieren'], array(0, 1, '0', '1', true, false), true)) {
+        return 'invertieren nur 0 oder 1';
+    }
+    return '';
+}
+
+/**
  * Ist der Wert fuer DIESEN Schluessel zulaessig?
  *
  * Geprueft wird gegen dieselbe Erwartung, die eb_config() ohnehin kennt -
@@ -1817,13 +1957,25 @@ function eb_wert_pruefen($k, $w)
         return (is_string($w) && preg_match('#^[a-zA-Z0-9_/\-]{0,128}$#', $w) === 1)
             ? '' : 'unzulaessiges Thema';
     }
-    if ($k === 'steller') { return is_array($w) ? '' : 'kein Feld'; }
-    if ($k === 'sp_steller') { return is_array($w) ? '' : 'kein Feld'; }
+    /* Bis 0.9.25 nur "ist ein Feld". Eine Sicherung mit steller[0].art = []
+     * wurde angenommen; unter PHP 8 starb danach jeder Aufruf von
+     * eb_config() an einem TypeError (isset mit Feld als Schluessel) -
+     * Oberflaeche, Endpunkt und Dienst. Gemessen 28.09.2026. */
+    if ($k === 'steller') {
+        if (!is_array($w) || count($w) > EB_STELLER) { return 'kein Feld'; }
+        foreach ($w as $i => $s) {
+            $g = eb_steller_feld_pruefen($s);
+            if ($g !== '') { return 'Stellglied ' . ((int) $i + 1) . ': ' . $g; }
+        }
+        return '';
+    }
+    if ($k === 'sp_steller') { return is_array($w) ? eb_steller_feld_pruefen($w) : 'kein Feld'; }
     /* Die sieben Quellenfelder: ein Feld, oder null fuer "nicht
      * eingerichtet". Beides ist gueltig - eb_quelle_richten() macht
      * daraus beim Lesen ein vollstaendiges Feld. */
     if (array_key_exists($k, eb_quellenfelder())) {
-        return (is_array($w) || $w === null) ? '' : 'kein Feld';
+        if ($w === null) { return ''; }
+        return is_array($w) ? eb_quelle_feld_pruefen($w) : 'kein Feld';
     }
     if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
                            'verlauf_ein', 'mqtt_topic'), true)) {
@@ -1880,9 +2032,12 @@ function eb_sicherung_lesen($roh)
     }
     /* Was fehlt, ist genauso ein Mangel wie was zuviel ist - sonst geht
      * jeder nicht genannte Schluessel still auf Werk. */
+    /* Nur, was in der Datei WIRKLICH fehlt. Bis 0.9.25 stand hier auch jeder
+     * Schluessel mit abgelehntem Wert - "fehlen: ziel1_w, frei_w, takt",
+     * obwohl ziel1_w und takt da waren und nur ungueltig (28.09.2026). */
     $fehlt = array();
     foreach ($bekannt as $k) {
-        if (!isset($gesehen[$k])) { $fehlt[] = $k; }
+        if (!array_key_exists($k, $daten)) { $fehlt[] = $k; }
     }
     if ($fehlt && $anzahl > 0) {
         $mangel[] = sprintf(eb_t('EINST.SICH_FEHLT'),
@@ -1891,7 +2046,17 @@ function eb_sicherung_lesen($roh)
     if ($anzahl === 0) {
         $mangel[] = eb_t('EINST.SICH_LEER');
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    /* Ein LEERES Aktionstoken in der Sicherung heisst "keins gesichert".
+     * Bis 0.9.25 wurde es uebernommen; beim naechsten Seitenaufruf entstand
+     * still ein neues, und jede in Loxone eingetragene Adresse bekam 403.
+     * Jetzt bleibt das bisherige Token stehen, und die Meldung sagt es. */
+    $hinweise = array();
+    if (!$mangel && (string) $neu['aktionstoken'] === '') {
+        $alt = eb_config(false);
+        $neu['aktionstoken'] = (string) $alt['aktionstoken'];
+        $hinweise[] = eb_t('EINST.SICH_TOKEN_BEHALTEN');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl, $hinweise);
 }
 
 /**

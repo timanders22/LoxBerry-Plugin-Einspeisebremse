@@ -3,9 +3,67 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.25 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.26 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.26
+
+Durchsicht vom 28.09.2026 an der installierten 0.9.25, mit vier Prüfern; jede
+Behebung ist gegen 0.9.25 gemessen (vorher rot, nachher grün), unter PHP 7.4 und 8.5.
+
+**Regelung und Dienst**
+* Ein einzelner misslungener Zählerabruf (HTTP, Modbus) löst keinen Notbetrieb
+  mehr aus. Der letzte gute Wert gilt mit seinem wahren Alter weiter; erst nach
+  `notfall_s` greift die Totmannschaltung – so, wie Hilfe und README es schon
+  versprachen. Bisher ging die Anlage im selben Takt auf den Notwert.
+* Die Grenze steigt nicht mehr über den Freigabewert `frei_w` hinaus. Bei
+  unbekannter Erzeugung (Fronius `P_PV` nachts `null`) und ohne Spitzenleistung
+  stieg sie bisher je Takt weiter (nach einer Stunde 217 kW, 720 Stellbefehle).
+* Die Wirkungsprüfung meldet „KEINE WIRKUNG“ nicht mehr nach jeder gelungenen
+  Freigabe, und folgt ein Gerät dauerhaft nicht, steht `WIRKUNG=-1` dauerhaft
+  und die Protokollzeile einmal (bisher 6 von 40 Takten, sechs Zeilen).
+* Zwei gleichzeitige Starts (Wächter, Oberfläche, Installation) ergeben einen
+  Dienst, nicht zwei; `dienst.sh start` sperrt dafür mit `flock`.
+* Eine zu kurze Modbus-Antwort wird verworfen statt zu 0,0 W; Register über
+  65535 werden abgewiesen statt still umgelegt; ein JSON-Pfad, der auf ein
+  Objekt statt auf eine Zahl zeigt, gilt nicht mehr als Messwert.
+* Zwei SunSpec-Wechselrichter hinter demselben Datamanager (Geräteadresse 1
+  und 2) gelten nicht mehr als „doppelt“.
+* Ein entferntes Stellglied wird nicht mehr weiter gemeldet; sein Name wird
+  im Broker abgeräumt. Beim Dienststart wird nur noch abgeräumt, was am Broker
+  wirklich zurückbehalten steht (bisher 28 leere Nachrichten, die das Gateway
+  als leere Werte an den Miniserver weitergab).
+* PHP 8.5: der HTTP-Status wird ohne die überholte Kopfzeilen-Variable
+  gelesen; unter 8.5 erscheint keine Verfallsmeldung mehr.
+
+**Dateien**
+* Bei voller Karte meldet das Schreiben einen Fehler, statt eine abgeschnittene
+  Datei über die heile zu legen; die Zweitschrift entsteht nur aus einem Stand,
+  der sich zurücklesen lässt. Bisher waren danach Konfiguration **und**
+  Zweitschrift kaputt und das Wortzeichen leer.
+* `preupgrade.sh` legt eine leere oder beschädigte Konfiguration nicht mehr
+  über die heile Zweitschrift, sondern warnt und lässt sie stehen.
+* Die Deinstallation setzt die Regelung auch in der Zweitschrift aus, hat eine
+  Zeitgrenze und meldet „freigegeben“ nur, wenn die Freigabe die Stellglieder
+  erreicht hat. `postupgrade.sh` löscht den frischen Stand des neuen Dienstes
+  nicht mehr.
+
+**Oberfläche**
+* Jede Aktion leitet danach um (HTTP 303) und zeigt ihr Ergebnis einmal. Ein
+  Neuladen nach „Neues Wortzeichen“ würfelte das Token bisher ein zweites Mal.
+* Anführungszeichen in Adresse und Inhalt bleiben stehen – der in der Hilfe
+  empfohlene Inhalt `{"limit":{W}}` wurde bisher beim Speichern zu `{limit:{W}}`.
+* Kommazahlen und unbekannte Auswahlwerte werden abgewiesen statt still
+  gerundet oder zurückgesetzt. Meldungen zeigen keine rohen Auszeichnungen mehr.
+* „Dienst anhalten“ meldet Erfolg nur noch, wenn der Dienst wirklich steht.
+* Zurückspielen: jedes Feld der Stellglieder und Messquellen wird geprüft (eine
+  Sicherung mit einem Feld an falscher Stelle legte unter PHP 8 das ganze Plugin
+  lahm); eine Sicherung ohne Wortzeichen behält das bisherige; die Meldung nennt
+  nur, was wirklich fehlt, und sagt, wann der Dienst die Einstellungen übernimmt.
+* Die Loxone-Vorlage trägt `HintText`, `Info` und je Eingang die Einheit, wie die
+  maßgebliche Ausfuhr; die Anleitung nennt achtzehn Summenwerte statt neun.
+* Reiter Test: kein Kreuz mehr für Stellgliedfelder, die noch nie gestellt wurden.
 
 ## Neu in 0.9.25
 

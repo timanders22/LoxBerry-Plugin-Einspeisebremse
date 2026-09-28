@@ -71,10 +71,32 @@ date +%s > "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
     && echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
 
 CF="$BASE/config/plugins/$PFOLDER/einspeisebremse.json"
+ZW="$BASE/config/plugins/$PFOLDER.backup.json"
+# Nur eine BRAUCHBARE Konfiguration ueber die Zweitschrift legen - nach
+# Inhalt entschieden wie die Selbstheilung (lesbares JSON mit Wortzeichen).
+# Bis 0.9.25 kopierte dieser Block jede vorhandene Datei: eine leere, "{}"
+# oder abgeschnittene Konfiguration ueberschrieb die heile Zweitschrift, und
+# nach dem Update waren Token, Stellglieder und Regelung fort, gemeldet als
+# "<OK> Konfiguration gesichert." (WSL, Faelle U3a-c, 28.09.2026).
 if [ -f "$CF" ]; then
-    cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" \
-        && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null \
-        && echo "<OK> Konfiguration gesichert."
+    if command -v php >/dev/null 2>&1; then
+        php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+                exit((is_array($d) && isset($d["aktionstoken"]) && is_string($d["aktionstoken"])
+                      && $d["aktionstoken"] !== "") ? 0 : 1);' "$CF" 2>/dev/null
+        CF_OK=$?
+    else
+        grep -Eq '"aktionstoken"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_.-]+"' "$CF" 2>/dev/null
+        CF_OK=$?
+    fi
+    if [ "$CF_OK" = "0" ]; then
+        cp -p "$CF" "$ZW" \
+            && chmod 600 "$ZW" 2>/dev/null \
+            && echo "<OK> Konfiguration gesichert."
+    elif [ -s "$ZW" ]; then
+        echo "<WARNING> Die Konfiguration ist leer oder beschaedigt; die bisherige Zweitschrift bleibt unberuehrt und wird nach dem Update zurueckgespielt."
+    else
+        echo "<WARNING> Die Konfiguration ist leer oder beschaedigt, und es gibt keine Zweitschrift. Nach dem Update ist das Plugin neu einzurichten."
+    fi
 fi
 
 # Den Dienst anhalten, BEVOR seine Dateien ersetzt werden. Ein laufender
