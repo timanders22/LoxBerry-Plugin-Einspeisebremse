@@ -69,7 +69,7 @@ $eb_eingaben_post = null;     // X-2: die Eingaben eines beanstandeten Formulars
 function eb_eingabe_felder($formular)
 {
     if ($formular === 'mqtt') {
-        return array('mqtt_ein', 'mqtt_topic');
+        return array('mqtt_ein', 'mqtt_topic', 'haus_netz_ein');
     }
     if ($formular === 'vorlage') {
         return array('vorlage_quellen', 'vq_ziel', 'vq_wert');
@@ -83,7 +83,8 @@ function eb_eingabe_felder($formular)
             'sp_name', 'sp_art', 'sp_einheit', 'sp_spitze', 'sp_still', 'sp_adresse', 'sp_inhalt',
             'ziel_w', 'totband_w', 'rampe_ab_w', 'rampe_auf_w', 'drossel_min_w', 'notfall_s',
             'notfall_w', 'frei_w', 'lade_max_w', 'soc_max', 'wirkung_s', 'takt', 'quelle_alter_s',
-            'ziel1_w', 'ziel2_w', 'speicher_zuerst', 'bilanz_ein', 'verlauf_ein'));
+            'ziel1_w', 'ziel2_w', 'speicher_zuerst', 'bilanz_ein', 'verlauf_ein',
+            'speicher_extern', 'extern_wirkung_s'));
     }
     return array();
 }
@@ -623,6 +624,7 @@ if ($eb_post && isset($_POST['speichern'])) {
             'wirkung_s' => array(5, 600), 'takt' => array(2, 300),
             'quelle_alter_s' => array(10, 86400),
             'ziel1_w' => array(0, 1000000), 'ziel2_w' => array(0, 1000000),
+            'extern_wirkung_s' => array(5, 600),
         ) as $eb_f => $eb_gr) {
             $w = $eb_zahl_pruef($eb_wert($eb_f), $eb_gr[0], $eb_gr[1], eb_t('EINST.L_' . strtoupper($eb_f)), $eb_f);
             if ($w !== null) { $eb_cfg[$eb_f] = $w; }
@@ -630,10 +632,23 @@ if ($eb_post && isset($_POST['speichern'])) {
         $eb_cfg['speicher_zuerst'] = !empty($_POST['speicher_zuerst']) ? 1 : 0;
         $eb_cfg['bilanz_ein'] = !empty($_POST['bilanz_ein']) ? 1 : 0;
         $eb_cfg['verlauf_ein'] = !empty($_POST['verlauf_ein']) ? 1 : 0;
+        /* Energie-1 C3: "Speicher extern gefuehrt" (ab Werk aus). Zusammen mit
+         * einem eigenen, nicht stillgelegten Speicherweg waere die Bremse der
+         * zweite Schreiber neben Loxone (Entwurf K4) - beanstandet, nichts
+         * gespeichert (Entscheidung 16), beide Felder markiert (X-2). */
+        $eb_cfg['speicher_extern'] = !empty($_POST['speicher_extern']) ? 1 : 0;
+        if ($eb_cfg['speicher_extern'] && $eb_cfg['sp_steller']['art'] !== 'aus'
+            && empty($eb_cfg['sp_steller']['stilllegen'])) {
+            $eb_fehler[] = eb_t('FEHLER.EXTERN_MIT_SPEICHERWEG');
+            eb_bean('speicher_extern');
+            eb_bean('sp_art');
+        }
     }
 
     if ($eb_formular === 'mqtt') {
         $eb_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
+        /* Energie-1 C4: haus/energie/netz_w und ts (ab Werk aus, nie retained). */
+        $eb_cfg['haus_netz_ein'] = !empty($_POST['haus_netz_ein']) ? 1 : 0;
 
         /* Weder leeren noch stillschweigend kleinschreiben. An einem
          * Themenpraefix haengen die virtuellen Eingaenge im Miniserver und
@@ -1279,7 +1294,7 @@ $eb_gruppen = array(
     array('ziel_w', 'totband_w', 'rampe_ab_w', 'rampe_auf_w'),
     array('drossel_min_w', 'notfall_s', 'notfall_w', 'frei_w'),
     array('lade_max_w', 'soc_max', 'wirkung_s', 'takt'),
-    array('quelle_alter_s', 'ziel1_w', 'ziel2_w'),
+    array('quelle_alter_s', 'ziel1_w', 'ziel2_w', 'extern_wirkung_s'),
 );
 foreach ($eb_gruppen as $eb_zeile) { ?>
 <tr>
@@ -1294,6 +1309,10 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="speicher_zuerst" value="1"<?= eb_h('speicher_zuerst', $eb_cfg['speicher_zuerst']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_SPEICHER_ZUERST')) ?></label>
   <p class="sm-hilfe"><?= eb_t('EINST.H_SPEICHER_ZUERST') ?></p>
+</div>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="speicher_extern" value="1"<?= eb_m('speicher_extern') ?><?= eb_h('speicher_extern', $eb_cfg['speicher_extern']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_SPEICHER_EXTERN')) ?></label>
+  <p class="sm-hilfe"><?= eb_t('EINST.H_SPEICHER_EXTERN') ?></p>
 </div>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="bilanz_ein" value="1"<?= eb_h('bilanz_ein', $eb_cfg['bilanz_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_BILANZ_EIN')) ?></label>
@@ -1357,6 +1376,10 @@ if ($eb_sich_warn) { ?>
   <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= eb_h('mqtt_ein', $eb_cfg['mqtt_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('MQTT.EIN')) ?></label>
 </div>
 <div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="haus_netz_ein" value="1"<?= eb_m('haus_netz_ein') ?><?= eb_h('haus_netz_ein', $eb_cfg['haus_netz_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('MQTT.HAUS_EIN')) ?></label>
+  <p class="sm-hilfe"><?= eb_t('MQTT.HAUS_EIN_HILFE') ?></p>
+</div>
+<div class="sm-feld">
   <label for="eb_thema"><?= eb_e(eb_t('MQTT.THEMA')) ?></label>
   <input data-role="none" type="text" id="eb_thema" name="mqtt_topic"<?= eb_m('mqtt_topic') ?> value="<?= eb_e(eb_w('mqtt_topic', $eb_cfg['mqtt_topic'])) ?>">
   <p class="sm-hilfe"><?= eb_t('MQTT.THEMA_HILFE') ?></p>
@@ -1379,6 +1402,18 @@ if ($eb_sich_warn) { ?>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= eb_t('MQTT.STELLERN_HILFE') ?></p>
+
+<h3><?= eb_e(eb_t('MQTT.H_HAUS')) ?></h3>
+<div class="sm-step"><?= eb_t('MQTT.HAUS_ERKLAERUNG') ?></div>
+<table class="sm-tbl">
+<tr><th><?= eb_e(eb_t('MQTT.SP_THEMA')) ?></th><th><?= eb_e(eb_t('MQTT.SP_RICHTUNG')) ?></th><th><?= eb_e(eb_t('MQTT.SP_BEDEUTUNG')) ?></th><th><?= eb_e(eb_t('MQTT.SP_RETAINED')) ?></th></tr>
+<?php foreach (eb_haus_themen() as $eb_k => $eb_hi) { ?>
+<tr><td><span class="sm-mono"><?= eb_e($eb_k) ?></span></td>
+    <td><?= eb_e(eb_t($eb_hi[0] === 'aus' ? 'MQTT.RICHTUNG_AUS' : 'MQTT.RICHTUNG_EIN')) ?></td>
+    <td><?= eb_e(eb_t($eb_hi[1])) ?></td>
+    <td><?= eb_e(eb_t('ALLG.NEIN')) ?></td></tr>
+<?php } ?>
+</table>
 
 <h3><?= eb_e(eb_t('MQTT.H_ABO')) ?></h3>
 <?php
@@ -1468,6 +1503,11 @@ list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
 <h3><?= eb_e(eb_t('LOX.H_BAUSTEINE')) ?></h3>
 <?= eb_t('LOX.BAUSTEINE') ?>
 <p class="sm-hilfe"><?= eb_t('LOX.BAUSTEINE_ERL') ?></p>
+
+<h3><?= eb_e(eb_t('LOX.H_EXTERN')) ?></h3>
+<div class="sm-step"><?= eb_t('LOX.EXTERN_ERKLAERUNG') ?></div>
+<?= eb_t('LOX.EXTERN_BAUSTEINE') ?>
+<p class="sm-hilfe"><?= eb_t('LOX.EXTERN_HINWEISE') ?></p>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
@@ -1571,6 +1611,8 @@ echo eb_selbstpruefung_html();
     <input data-role="none" type="text" size="5" name="w_soc" value="<?= eb_e(isset($_POST['w_soc']) ? $_POST['w_soc'] : '') ?>"></label></td>
   <td><label><?= eb_e(eb_t('TEST.W_LADE')) ?><br>
     <input data-role="none" type="text" size="8" name="w_lade" value="<?= eb_e(isset($_POST['w_lade']) ? $_POST['w_lade'] : '') ?>"></label></td>
+  <td><label><?= eb_e(eb_t('TEST.W_AUFNAHME')) ?><br>
+    <input data-role="none" type="text" size="8" name="w_aufn" value="<?= eb_e(isset($_POST['w_aufn']) ? $_POST['w_aufn'] : '') ?>"></label></td>
 </tr></table>
 </div>
 <div class="sm-knopfreihe">

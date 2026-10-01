@@ -221,6 +221,20 @@ function eb_vorgaben()
          * gefaehrlich: ein alter Wert von 40 Prozent laesst den Speicher
          * als aufnahmefaehig erscheinen. */
         'quelle_alter_s'  => 300,
+        /* Energie-1 C3 (Entscheidung 25): "Speicher extern gefuehrt". Loxone
+         * fuehrt die Speicher und meldet ueber haus/energie/aufnahme_w (mit
+         * haus/energie/aufnahme_ts), wie viel sie noch aufnehmen; die Bremse
+         * wartet dann hoechstens extern_wirkung_s, ob der Ueberschuss
+         * verschwindet, bevor sie abregelt. Sie stellt selbst keinen
+         * Speicher. Ab Werk aus. 60 s: der Venus E schweigt 7-17 % der Zeit
+         * fuer 20-60 s (Regeln/12_geraete.md:420-440), und die Messung (b)
+         * der Reaktionszeit am Geraet steht noch aus. Als Hoechstalter des
+         * Werts gilt quelle_alter_s, wie fuer jede Nebenquelle. */
+        'speicher_extern'  => 0,
+        'extern_wirkung_s' => 60,
+        /* Energie-1 C4: haus/energie/netz_w und haus/energie/ts senden -
+         * nie retained (Messwert und Zeitstempel, Entscheidung 25). Ab Werk aus. */
+        'haus_netz_ein'   => 0,
         /* Die Grenze, die beim AUSSCHALTEN der Regelung einmal gestellt
          * wird. Hoch angesetzt, weil "aus" heissen soll: die Anlage darf
          * wieder alles. Eine 0 waere hier die gefaehrlichste Vorgabe von
@@ -475,6 +489,8 @@ function eb_config($erzeugen = true)
 
     $cfg['ein'] = empty($cfg['ein']) ? 0 : 1;
     $cfg['speicher_zuerst'] = empty($cfg['speicher_zuerst']) ? 0 : 1;
+    $cfg['speicher_extern'] = empty($cfg['speicher_extern']) ? 0 : 1;
+    $cfg['haus_netz_ein'] = empty($cfg['haus_netz_ein']) ? 0 : 1;
     $cfg['mqtt_ein'] = empty($cfg['mqtt_ein']) ? 0 : 1;
     $cfg['bilanz_ein'] = empty($cfg['bilanz_ein']) ? 0 : 1;
     $cfg['verlauf_ein'] = empty($cfg['verlauf_ein']) ? 0 : 1;
@@ -485,7 +501,7 @@ function eb_config($erzeugen = true)
                    'drossel_min_w' => array(0, 1000000), 'notfall_s' => array(5, 3600),
                    'notfall_w' => array(0, 1000000), 'soc_max' => array(10, 100),
                    'lade_max_w' => array(0, 1000000), 'wirkung_s' => array(5, 600), 'frei_w' => array(0, 1000000),
-                   'quelle_alter_s' => array(10, 86400),
+                   'quelle_alter_s' => array(10, 86400), 'extern_wirkung_s' => array(5, 600),
                    'takt' => array(2, 300)) as $k => $gr) {
         /* Der Ersatzwert kommt aus DERSELBEN Quelle wie der Schluessel.
          * Frueher stand hier $gr[0], also die untere Bereichsgrenze -
@@ -936,11 +952,21 @@ function eb_steller()
  */
 function eb_speicher_steller()
 {
-    $s = eb_config()['sp_steller'];
+    $eb_c = eb_config();
+    /* Energie-1 C3: "Speicher extern gefuehrt" heisst, die Bremse stellt
+     * keinen Speicher - auch nicht beim Ausschalten (sonst schickte sie 0 und
+     * ueberschriebe den Sollwert aus Loxone, Entwurf K4). */
+    if (!empty($eb_c['speicher_extern'])) { return null; }
+    $s = $eb_c['sp_steller'];
     if ($s['art'] === 'aus' || trim((string) $s['adresse']) === '') { return null; }
     if (!empty($s['stilllegen'])) { return null; }
     $s['nr'] = 0;
     if ($s['name'] === '') { $s['name'] = 'Speicher'; }
+    /* Energie-1 (Entscheidung 25): wer einen Speicher anspricht, sagt, wer
+     * er ist. Die Schreiber-Wache der Stellglied-Linien (MarstekVenus ab
+     * 1.1.19) unterscheidet so die Bremse von Loxone und der
+     * aWATTar-Kopplung. eb_befehl_bauen() haengt es an. */
+    $s['von'] = 'einspeisebremse';
     return $s;
 }
 
@@ -992,8 +1018,35 @@ function eb_befehl_bauen($steller, $watt)
         ? (string) (int) round(max(0.0, min(100.0, $w / $spitze * 100.0)))
         : '';
     $adresse = strtr((string) $steller['adresse'], $ersetzung);
+    /* &von= nur am Speicherweg (eb_speicher_steller setzt 'von'), nur bei
+     * HTTP und nur an der Adresse eines LoxBerry-Plugins - siehe
+     * eb_von_anhaengen(). */
+    if (!empty($steller['von']) && in_array($steller['art'], array('http_get', 'http_post'), true)) {
+        $adresse = eb_von_anhaengen($adresse, (string) $steller['von']);
+    }
     $inhalt = strtr((string) $steller['inhalt'], $ersetzung);
     return array($adresse, $inhalt, $ersetzung);
+}
+
+/**
+ * &von=<kennung> an die Adresse eines LoxBerry-Plugin-Endpunkts haengen.
+ *
+ * Nur an http(s)://<host>/plugins/<ordner>/... - dort liegen die Endpunkte
+ * der Speicher-Linien (MarstekVenus marstek.php, BatterieBMS index.php). An
+ * die Adresse eines fremden Geraets wird nichts angehaengt: was ein
+ * Wechselrichter oder Speicher mit einem unbekannten Parameter tut, weiss
+ * hier niemand. Traegt die Adresse schon ein von=, bleibt sie, wie sie ist -
+ * der Anwender hat es dann selbst so gewollt.
+ */
+function eb_von_anhaengen($adresse, $von)
+{
+    $adresse = (string) $adresse;
+    if (!preg_match('#^https?://[^/?\#]+/plugins/[A-Za-z0-9_\-]+/#i', $adresse)) { return $adresse; }
+    if (preg_match('#[?&]von=#', $adresse)) { return $adresse; }
+    $anker = '';
+    $p = strpos($adresse, '#');
+    if ($p !== false) { $anker = substr($adresse, $p); $adresse = substr($adresse, 0, $p); }
+    return $adresse . (strpos($adresse, '?') === false ? '?' : '&') . 'von=' . rawurlencode((string) $von) . $anker;
 }
 
 /**
@@ -1024,6 +1077,7 @@ function eb_maengel_sperrend()
         'MANGEL.ERZEUGUNG_DOPPELT', 'MANGEL.ERZEUGUNG_WEITERE_OHNE_ADRESSE',
         'MANGEL.SPEICHER_OHNE_ADRESSE', 'MANGEL.SPEICHER_OHNE_PLATZHALTER',
         'MANGEL.SPEICHER_PROZENT_OHNE_SPITZE', 'MANGEL.SPEICHER_SUNSPEC',
+        'MANGEL.EXTERN_MIT_SPEICHERWEG',
     );
 }
 
@@ -1168,7 +1222,9 @@ function eb_maengel($cfg)
         $eb_stgesehen[$marke] = 1;
     }
     if (!$st) { $m[] = 'MANGEL.KEIN_STELLER'; }
-    if (!empty($cfg['speicher_zuerst']) && (int) $cfg['lade_max_w'] <= 0) {
+    /* In der Betriebsart "Speicher extern gefuehrt" ruht der eigene
+     * Speicherzweig; die beiden Maengel dazu gelten dann nicht. */
+    if (!empty($cfg['speicher_zuerst']) && empty($cfg['speicher_extern']) && (int) $cfg['lade_max_w'] <= 0) {
         $m[] = 'MANGEL.SPEICHER_OHNE_LEISTUNG';
     }
     /* Ohne gemessene Ladeleistung laesst sich nicht feststellen, ob der
@@ -1176,7 +1232,7 @@ function eb_maengel($cfg)
      * ungeprueft als aufnahmefaehig, und die Anlage speiste dauerhaft
      * weiter, waehrend der Anlass "der Ueberschuss geht in den Speicher"
      * meldete. Gemessen am 18.08.2026. */
-    if (!empty($cfg['speicher_zuerst']) && $cfg['q_lade']['art'] === 'aus') {
+    if (!empty($cfg['speicher_zuerst']) && empty($cfg['speicher_extern']) && $cfg['q_lade']['art'] === 'aus') {
         $m[] = 'MANGEL.SPEICHER_OHNE_MESSUNG';
     }
     $spst = $cfg['sp_steller'];
@@ -1192,6 +1248,13 @@ function eb_maengel($cfg)
         if ($spst['einheit'] === 'Prozent' && (int) $spst['spitze_w'] <= 0) {
             $m[] = 'MANGEL.SPEICHER_PROZENT_OHNE_SPITZE';
         }
+    }
+    /* Energie-1 C3: in der Betriebsart "Speicher extern gefuehrt" stellt die
+     * Bremse keinen Speicher. Ein eingetragener, nicht stillgelegter
+     * Speicherweg waere der zweite Schreiber neben Loxone (Entwurf K4) -
+     * das sperrt. Der Dienst stellt ihn in der Betriebsart ohnehin nicht. */
+    if (!empty($cfg['speicher_extern']) && $spst['art'] !== 'aus' && empty($spst['stilllegen'])) {
+        $m[] = 'MANGEL.EXTERN_MIT_SPEICHERWEG';
     }
     if ((int) $cfg['rampe_auf_w'] > (int) $cfg['rampe_ab_w']) { $m[] = 'MANGEL.RAMPE_VERDREHT'; }
     if ((int) $cfg['notfall_w'] > (int) $cfg['ziel_w'] && (int) $cfg['ziel_w'] > 0) {
@@ -1523,6 +1586,74 @@ function eb_mqtt_themen()
         'stellerN/watt'  => 'EB_MQTT.S_WATT',
         'stellerN/ok'    => 'EB_MQTT.S_OK',
     );
+}
+
+/** Die Schluessel, die mit Energie-1 hinzukamen: eine aeltere Sicherung darf sie nicht kennen. */
+function eb_sicherung_neue_schluessel()
+{
+    return array('speicher_extern', 'extern_wirkung_s', 'haus_netz_ein');
+}
+
+/**
+ * Die Haus-Themen der Bremse (Energie-1, Entscheidung 25; Regeln/07
+ * "Haus-Themen fuer das Zusammenspiel der Linien").
+ *
+ * Ohne Praefix der Linie und NIE retained - abweichend von "haus/... retained"
+ * (Nr. 15), weil es Messwerte und Zeitstempel sind: ein zurueckbehaltener
+ * Ueberschuss hielte nach einem Absturz Laderegeln offen (Entwurf K9).
+ * Weil nichts zurueckbehalten wird, gibt es beim Abschalten und beim
+ * Deinstallieren nichts abzuraeumen; fremde Haus-Themen fasst die Bremse nie an.
+ *   richtung 'aus': die Bremse sendet (C4, Schalter haus_netz_ein)
+ *   richtung 'ein': die Bremse liest, Absender ist Loxone (C3, speicher_extern)
+ */
+function eb_haus_themen()
+{
+    return array(
+        'haus/energie/netz_w'      => array('aus', 'EB_HAUS.NETZ_W'),
+        'haus/energie/ts'          => array('aus', 'EB_HAUS.TS'),
+        'haus/energie/aufnahme_w'  => array('ein', 'EB_HAUS.AUFNAHME_W'),
+        'haus/energie/aufnahme_ts' => array('ein', 'EB_HAUS.AUFNAHME_TS'),
+    );
+}
+
+/**
+ * Den Wert aus Loxone fuer "Speicher extern gefuehrt" bewerten.
+ *
+ * $w, $ts: was der MQTT-Zuhoerer zuletzt auf haus/energie/aufnahme_w bzw.
+ * haus/energie/aufnahme_ts empfangen hat - array(text, empfangen_um) - oder
+ * null. Rueckgabe: array(aufnahme_w|null, anlass, alter_s|null), anlass:
+ *   gut, fehlt (nie ein Wert), ohne_ts (nie ein Zeitstempel), leer,
+ *   unlesbar, unglaubhaft, ts_unlesbar, ts_zukunft, zu_alt
+ *
+ * Frisch heisst: der Zeitstempel ist hoechstens $grenze_s alt - am INHALT
+ * (die Zeit, die Loxone hineinschreibt) UND am Empfang gemessen; es zaehlt
+ * das groessere. So faellt ein Miniserver auf, der nicht mehr sendet, und
+ * ebenso ein alter Wert, den ein Broker nach einem Neustart erneut zustellt.
+ * Der Wert selbst darf aelter sein: Loxone sendet ihn nur bei Aenderung, und
+ * solange der Zeitstempel frisch kommt, gilt er.
+ *
+ * Unix-Sekunden, oder Loxone-Zeit (Sekunden seit 01.01.2009, Regeln/07): die
+ * wird umgerechnet. Die Bereiche ueberschneiden sich nicht (heute rund
+ * 5,6e8 gegen 1,79e9). Alles andere ist ts_unlesbar.
+ */
+function eb_extern_bewerten($w, $ts, $jetzt, $grenze_s)
+{
+    if (!is_array($w) || !array_key_exists(0, $w)) { return array(null, 'fehlt', null); }
+    if (!is_array($ts) || !array_key_exists(0, $ts)) { return array(null, 'ohne_ts', null); }
+    list($ok, $anl) = eb_messwert_taugt($w[0]);
+    if (!$ok) { return array(null, $anl === 'fehlt' ? 'leer' : $anl, null); }
+    $t = str_replace(',', '.', trim((string) $ts[0]));
+    if ($t === '' || !is_numeric($t)) { return array(null, 'ts_unlesbar', null); }
+    $t = (float) $t;
+    if ($t > 1.0e8 && $t < 1.2e9) { $t += 1230768000.0; }
+    if ($t < 1.2e9 || $t > 4.0e9) { return array(null, 'ts_unlesbar', null); }
+    $grenze = max(1.0, (float) $grenze_s);
+    $jetzt = (float) $jetzt;
+    if ($t - $jetzt > $grenze) { return array(null, 'ts_zukunft', null); }
+    $empf = isset($ts[1]) ? (float) $ts[1] : 0.0;
+    $alter = max($jetzt - $t, $jetzt - $empf, 0.0);
+    if ($alter > $grenze) { return array(null, 'zu_alt', round($alter, 1)); }
+    return array(max(0.0, eb_zahl($w[0], 0.0)), 'gut', round($alter, 1));
 }
 
 /* ==================================================================
@@ -1965,7 +2096,7 @@ function eb_wert_pruefen($k, $w)
         'notfall_w' => array(0, 1000000), 'soc_max' => array(10, 100),
         'lade_max_w' => array(0, 1000000), 'wirkung_s' => array(5, 600),
         'frei_w' => array(0, 1000000), 'quelle_alter_s' => array(10, 86400),
-        'takt' => array(2, 300), 'stufe' => array(0, 2));
+        'takt' => array(2, 300), 'stufe' => array(0, 2), 'extern_wirkung_s' => array(5, 600));
     if (isset($zahl[$k])) {
         if ($w === null) { return 'fehlt'; }
         if (!is_numeric($w)) { return 'keine Zahl'; }
@@ -1976,7 +2107,7 @@ function eb_wert_pruefen($k, $w)
         return '';
     }
     if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
-                           'verlauf_ein'), true)) {
+                           'verlauf_ein', 'speicher_extern', 'haus_netz_ein'), true)) {
         return in_array($w, array(0, 1, '0', '1', true, false), true) ? '' : 'nur 0 oder 1';
     }
     if ($k === 'aktionstoken') {
@@ -2013,7 +2144,7 @@ function eb_wert_pruefen($k, $w)
         return is_array($w) ? eb_quelle_feld_pruefen($w) : 'kein Feld';
     }
     if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
-                           'verlauf_ein', 'mqtt_topic'), true)) {
+                           'verlauf_ein', 'speicher_extern', 'haus_netz_ein', 'mqtt_topic'), true)) {
         return 'unbrauchbarer Wert';
     }
     return (is_scalar($w) || is_array($w)) ? '' : 'unbrauchbarer Wert';
@@ -2078,6 +2209,13 @@ function eb_sicherung_lesen($roh, &$namen = null)
     foreach ($bekannt as $k) {
         if (!array_key_exists($k, $daten)) { $fehlt[] = $k; }
     }
+    /* Energie-1 (01.10.2026): eine Sicherung aus einer Fassung vor den drei
+     * Energie-1-Schluesseln ist vollstaendig - es fehlen nur die neuen. Sie
+     * wird angenommen, und die drei behalten den laufenden Wert (wie bei
+     * einem Update); die Meldung nennt sie. Ohne diese Zeilen wiese das
+     * Zurueckspielen jede Sicherung aus 0.9.28 und 0.9.29 ab. */
+    $spaeter = array_values(array_intersect($fehlt, eb_sicherung_neue_schluessel()));
+    $fehlt = array_values(array_diff($fehlt, $spaeter));
     if ($fehlt && $anzahl > 0) {
         $namen = array_merge($namen, $fehlt);
         $mangel[] = sprintf(eb_t('EINST.SICH_FEHLT'),
@@ -2091,6 +2229,12 @@ function eb_sicherung_lesen($roh, &$namen = null)
      * still ein neues, und jede in Loxone eingetragene Adresse bekam 403.
      * Jetzt bleibt das bisherige Token stehen, und die Meldung sagt es. */
     $hinweise = array();
+    if (!$mangel && $spaeter) {
+        $eb_lauf = eb_config(false);
+        foreach ($spaeter as $k) { $neu[$k] = $eb_lauf[$k]; }
+        $hinweise[] = sprintf(eb_t('EINST.SICH_NEUE_BEHALTEN'),
+            htmlspecialchars(implode(', ', $spaeter), ENT_QUOTES, 'UTF-8'));
+    }
     if (!$mangel && (string) $neu['aktionstoken'] === '') {
         $alt = eb_config(false);
         $neu['aktionstoken'] = (string) $alt['aktionstoken'];

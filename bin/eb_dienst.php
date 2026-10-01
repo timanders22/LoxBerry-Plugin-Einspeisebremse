@@ -125,6 +125,13 @@ function eb_themen($cfg)
             $t[$cfg[$k]['adresse']] = 1;
         }
     }
+    /* Energie-1 C3: in der Betriebsart "Speicher extern gefuehrt" hoert der
+     * Zuhoerer auch auf den Wert aus Loxone (eb_haus_themen, Richtung 'ein'). */
+    if (!empty($cfg['speicher_extern'])) {
+        foreach (eb_haus_themen() as $eb_ht => $eb_hi) {
+            if ($eb_hi[0] === 'ein') { $t[$eb_ht] = 1; }
+        }
+    }
     return array_keys($t);
 }
 
@@ -917,6 +924,20 @@ function eb_durchlauf($cfg, $stand)
         $netz_anlass = 'letzter_wert_' . $netz_anlass;
     }
 
+    /* ---- Speicher extern gefuehrt (Energie-1 C3) ----
+     * Der Wert aus Loxone: wie viel die Speicher, die Loxone fuehrt, gerade
+     * noch aufnehmen. Ohne frischen Zeitstempel ist er null, und der Kern
+     * regelt wie ohne diese Betriebsart. Als Hoechstalter gilt dieselbe
+     * Grenze wie fuer jede Nebenquelle. */
+    $eb_ext = !empty($cfg['speicher_extern']);
+    if ($eb_ext) {
+        global $eb_werte;
+        list($auf, $auf_anlass, $auf_alter) = eb_extern_bewerten(
+            isset($eb_werte['haus/energie/aufnahme_w']) ? $eb_werte['haus/energie/aufnahme_w'] : null,
+            isset($eb_werte['haus/energie/aufnahme_ts']) ? $eb_werte['haus/energie/aufnahme_ts'] : null,
+            $jetzt, $agrenze);
+    }
+
     /* ---- Die gewaehlte Zielstufe ----
      * Der Kern kennt nur ein ziel_w. Welche der drei eingetragenen Stufen
      * das gerade ist, entscheidet sich hier - und ausschliesslich aus der
@@ -939,6 +960,7 @@ function eb_durchlauf($cfg, $stand)
          * Erzeugung freigeben. */
         'alter_s'   => ($netz === null) ? -1 : $netz_alter,
     );
+    if ($eb_ext) { $mess['aufnahme_w'] = $auf; }
 
     $cfg['anlage_max_w'] = eb_anlage_max($steller);
 
@@ -966,6 +988,10 @@ function eb_durchlauf($cfg, $stand)
         'wirkung'       => isset($stand['wirkung']) ? (int) $stand['wirkung'] : 0,
     );
     if ($drossel_start !== null) { $zust['drossel_w'] = $drossel_start; }
+    if ($eb_ext) {
+        $zust['ext_seit'] = isset($stand['ext_seit']) ? $stand['ext_seit'] : 0;
+        $zust['ext_sperre_bis'] = isset($stand['ext_sperre_bis']) ? $stand['ext_sperre_bis'] : 0;
+    }
 
     $r = eb_regeln($mess, $cfg, $zust, $jetzt);
 
@@ -1014,6 +1040,18 @@ function eb_durchlauf($cfg, $stand)
         'netz_gut_wert' => ($netz !== null && strpos((string) $netz_anlass, 'letzter_wert_') !== 0)
                            ? $netz : (isset($stand['netz_gut_wert']) ? $stand['netz_gut_wert'] : null),
     );
+    /* Nur in der Betriebsart: ohne sie bleibt der Stand Feld fuer Feld der
+     * bisherige. Er steht auch bei ausgeschalteter Regelung da, damit der
+     * Reiter Test zeigt, ob der Wert aus Loxone ankommt, bevor man einschaltet. */
+    if ($eb_ext) {
+        $neu['aufnahme_w'] = $auf;
+        $neu['aufnahme_anlass'] = $auf_anlass;
+        $neu['aufnahme_alter'] = $auf_alter;
+        $neu['extern'] = isset($r['extern']) ? $r['extern'] : '';
+        $neu['ext_seit'] = isset($r['ext_seit']) ? $r['ext_seit'] : 0.0;
+        $neu['ext_sperre_bis'] = isset($r['ext_sperre_bis']) ? $r['ext_sperre_bis'] : 0.0;
+        eb_extern_melden($stand, $neu, $cfg, $jetzt);
+    }
 
     /* Nur Stellglieder, die es noch gibt. Die Liste kommt aus dem alten
      * Stand und wurde bis 0.9.25 nur bei Freigabe oder geaenderter Grenze
@@ -1713,6 +1751,64 @@ function eb_verlauf_fortschreiben($cfg, $stand, $jetzt)
                       array('punkte' => $eb_verlauf_punkte));
 }
 
+/**
+ * Energie-1 C3: das Protokoll sagt es, wenn der Wert aus Loxone ausbleibt
+ * (oder der Grund dafuer wechselt) oder wiederkommt, und wenn eine Wartezeit
+ * ohne Wirkung ablief - je einmal beim WECHSEL, nicht in jedem Takt (der Dienst laeuft im Fuenfsekundentakt,
+ * das Protokoll liegt auf einer Ramdisk). Nur bei eingeschalteter Regelung:
+ * sonst wird ohnehin nichts gedrosselt.
+ */
+function eb_extern_melden($stand, $neu, $cfg, $jetzt)
+{
+    if (empty($cfg['ein'])) { return; }
+    $vor = isset($stand['aufnahme_anlass']) ? (string) $stand['aufnahme_anlass'] : '';
+    $jetzt_a = (string) $neu['aufnahme_anlass'];
+    if ($jetzt_a === 'gut' && $vor !== 'gut' && $vor !== '') {
+        eb_log('Speicher extern gefuehrt: der Wert aus Loxone (haus/energie/aufnahme_w) ist wieder frisch.');
+    } elseif ($jetzt_a !== 'gut' && $jetzt_a !== $vor) {
+        eb_log('Speicher extern gefuehrt: kein frischer Wert aus Loxone (haus/energie/aufnahme_w, '
+             . $jetzt_a . ') - es wird gedrosselt wie ohne diese Betriebsart.');
+    }
+    if ((string) $neu['extern'] === 'abgelaufen') {
+        eb_log(sprintf('Speicher extern gefuehrt: Loxone meldete %d W Aufnahme, aber der Ueberschuss '
+             . 'stand nach %d s noch - es wird gedrosselt, und die naechsten %d s wird nicht mehr gewartet.',
+            (int) round((float) $neu['aufnahme_w']), (int) $cfg['extern_wirkung_s'],
+            (int) round((float) $neu['ext_sperre_bis'] - (float) $jetzt)));
+    }
+}
+
+/**
+ * Energie-1 C4: den Netzzaehlerwert als Haus-Thema anbieten.
+ *
+ * haus/energie/netz_w (plus = Bezug, minus = Einspeisung - wie ueberall in
+ * der Bremse) und haus/energie/ts (Unix-Sekunden der MESSUNG, nicht des
+ * Sendens). Beide NIE retained (Entscheidung 25): ein zurueckbehaltener
+ * Messwert stuende nach einem Absturz als aktueller im Broker.
+ *
+ * Gesendet wird nur ein frisch gemessener Wert. Der weitergereichte letzte
+ * gute Wert (netz_anlass letzter_wert_*) und ein Wert aelter als notfall_s
+ * gehen nicht hinaus - dann bleibt ts stehen, und genau daran erkennt ein
+ * Abnehmer den Ausfall (Regeln/07: der Zeitstempel wird nur bei Erfolg
+ * fortgeschrieben). Hoechstens alle 5 s, damit ein kurzer Takt das
+ * Gateway nicht flutet. Unabhaengig von mqtt_ein: das ist der Schalter der
+ * eigenen Themen unter dem Praefix.
+ */
+function eb_haus_veroeffentlichen($cfg, $stand)
+{
+    static $um = 0.0;
+    if (empty($cfg['haus_netz_ein'])) { return; }
+    if (!isset($stand['netz']) || $stand['netz'] === null || !is_numeric($stand['netz'])) { return; }
+    if (strpos((string) (isset($stand['netz_anlass']) ? $stand['netz_anlass'] : ''), 'letzter_wert_') === 0) { return; }
+    $alter = (isset($stand['netz_alter']) && is_numeric($stand['netz_alter'])) ? (float) $stand['netz_alter'] : -1.0;
+    if ($alter < 0.0 || $alter > (float) $cfg['notfall_s']) { return; }
+    $jetzt = microtime(true);
+    if ($um > 0.0 && $jetzt - $um < 5.0) { return; }
+    $um = $jetzt;
+    eb_mqtt_veroeffentlichen('haus/energie/netz_w', (int) round((float) $stand['netz']), false);
+    /* abgerundet: ein Zeitstempel liegt nie in der Zukunft */
+    eb_mqtt_veroeffentlichen('haus/energie/ts', (int) floor($jetzt - $alter), false);
+}
+
 /** Beim geordneten Beenden einmal online=0 hinterlassen. */
 function eb_mqtt_abmelden($cfg)
 {
@@ -1742,6 +1838,15 @@ if ($eb_hat('--probe')) {
         printf("%-13s %-10s %s\n", $name,
             $w === null ? '-' : round($w, 1),
             $anlass . ($w === null ? '' : sprintf(' (%.1f s alt)', $a)));
+    }
+    /* Energie-1 C3: der Wert aus Loxone, wie ihn der Dienst bewertet. */
+    if (!empty($cfg['speicher_extern'])) {
+        list($w, $anlass, $a) = eb_extern_bewerten(
+            isset($eb_werte['haus/energie/aufnahme_w']) ? $eb_werte['haus/energie/aufnahme_w'] : null,
+            isset($eb_werte['haus/energie/aufnahme_ts']) ? $eb_werte['haus/energie/aufnahme_ts'] : null,
+            microtime(true), max(10.0, eb_zahl($cfg['quelle_alter_s'], 300.0)));
+        printf("%-13s %-10s %s\n", 'Aufnahme', $w === null ? '-' : round($w, 1),
+            $anlass . ($a === null ? '' : sprintf(' (%.1f s alt)', $a)) . ' [haus/energie/aufnahme_w]');
     }
     eb_hoerer_beenden();
     exit(0);
@@ -1871,6 +1976,7 @@ if ($eb_hat('--einmal')) {
     eb_bilanz_fortschreiben($cfg, $neu, microtime(true));
     eb_verlauf_fortschreiben($cfg, $neu, microtime(true));
     eb_veroeffentlichen($cfg, $neu);
+    eb_haus_veroeffentlichen($cfg, $neu);
     echo eb_zeile($neu);
     eb_hoerer_beenden();
     /* Die Deinstallation wertet den Rueckgabewert aus. Bis 0.9.25 immer 0 -
@@ -1941,6 +2047,7 @@ while ($eb_laeuft) {
         eb_bilanz_fortschreiben($eb_cfg, $eb_neu, $jetzt);
         eb_verlauf_fortschreiben($eb_cfg, $eb_neu, $jetzt);
         eb_veroeffentlichen($eb_cfg, $eb_neu);
+        eb_haus_veroeffentlichen($eb_cfg, $eb_neu);
         $eb_naechste = $jetzt + max(2, (int) $eb_cfg['takt']);
     }
     usleep(200000);

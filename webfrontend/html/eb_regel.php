@@ -17,7 +17,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('EB_KERN', '1.4.1');
+define('EB_KERN', '1.5.0');
 
 /* Was das Stellwerk in einem Durchlauf tun kann. */
 define('EB_NICHTS',   0);
@@ -152,6 +152,53 @@ function eb_speicher_wirkt($lade_ist, $lade_soll, $zust, $jetzt, $wartezeit_s)
 }
 
 /**
+ * Speicher extern gefuehrt (Energie-1 C3, Entscheidung 25): darf die Bremse
+ * noch warten, statt abzuregeln?
+ *
+ * In dieser Betriebsart fuehrt Loxone die Speicher (im Haus die Vorrangkette
+ * Fronius-Batterie -> Marstek -> Auto). Loxone meldet ueber
+ * haus/energie/aufnahme_w, wie viel die Speicher in diesem Augenblick noch
+ * ZUSAETZLICH aufnehmen koennen. Die Bremse stellt selbst keinen Speicher -
+ * es gibt also keinen zweiten Schreiber (Entwurf K4). Sie wartet nur, ob
+ * Loxone den Ueberschuss unterbringt, bevor sie abregelt: abgeregelter
+ * Ertrag ist verloren, eingelagerter nicht (Entwurf K5).
+ *
+ * Gewartet wird hoechstens $warte_s je Ueberschuss-Folge und nur fuer den
+ * Teil, den Loxone als Aufnahme meldet. Steht der Ueberschuss nach der
+ * Wartezeit noch, hat ihn der Speicher nicht aufgenommen: dann wird wie
+ * bisher abgeregelt, und fuer zehn Wartezeiten wird nicht mehr gewartet -
+ * dasselbe Muster wie eb_speicher_wirkt(). Ohne die Sperre pumpte die
+ * Anlage: Wartezeit, abregeln, im Band, freigeben, neue Wartezeit.
+ *
+ * $aufnahme_w null heisst: kein frischer Wert aus Loxone (eb_extern_bewerten).
+ * Dann gilt das bisherige Verhalten - nie still mehr einspeisen als ohne
+ * diese Betriebsart.
+ *
+ * Rueckgabe: array(wartet 0/1, gutschrift_w, ext_seit, ext_sperre_bis, urteil)
+ *   urteil: ohne_wert, keine_aufnahme, gesperrt, wartet, abgelaufen
+ */
+function eb_extern_wartet($aufnahme_w, $ueber_w, $zust, $jetzt, $warte_s)
+{
+    $seit = eb_zahl(isset($zust['ext_seit']) ? $zust['ext_seit'] : 0, 0.0);
+    $sperre = eb_zahl(isset($zust['ext_sperre_bis']) ? $zust['ext_sperre_bis'] : 0, 0.0);
+    $warte = max(1.0, eb_zahl($warte_s, 60.0));
+    $jetzt = eb_zahl($jetzt, 0.0);
+    if ($sperre > 0.0 && $jetzt >= $sperre) { $sperre = 0.0; }
+    if ($aufnahme_w === null || is_bool($aufnahme_w) || !is_numeric($aufnahme_w)) {
+        return array(0, 0.0, 0.0, $sperre, 'ohne_wert');
+    }
+    if ($sperre > 0.0) { return array(0, 0.0, 0.0, $sperre, 'gesperrt'); }
+    $auf = max(0.0, eb_zahl($aufnahme_w, 0.0));
+    if ($auf <= 0.0) { return array(0, 0.0, 0.0, 0.0, 'keine_aufnahme'); }
+    $gut = min($auf, max(0.0, eb_zahl($ueber_w, 0.0)));
+    // Erste Runde der Folge: ab jetzt zaehlt die Wartezeit.
+    if ($seit <= 0.0) { return array(1, $gut, $jetzt, 0.0, 'wartet'); }
+    if ($jetzt - $seit < $warte) { return array(1, $gut, $seit, 0.0, 'wartet'); }
+    // Abgelaufen, und der Ueberschuss steht noch: der Speicher hat ihn nicht genommen.
+    return array(0, 0.0, 0.0, $jetzt + 10.0 * $warte, 'abgelaufen');
+}
+
+/**
  * Eine Aenderung an der Leine fuehren.
  *
  * Abwaerts darf es schnell gehen - das ist die Richtung, die eine Auflage
@@ -194,15 +241,18 @@ function eb_grenzen_wahren($erg, $anlage_max_w, $lade_max_w)
 /**
  * Der ganze Entschluss eines Durchlaufs.
  *
- * $mess:  netz, erzeugung (null = nicht gemessen), soc, lade_ist, alter_s
+ * $mess:  netz, erzeugung (null = nicht gemessen), soc, lade_ist, alter_s,
+ *         aufnahme_w (nur mit speicher_extern; null = kein frischer Wert)
  * $cfg:   ziel_w, totband_w, rampe_ab_w, rampe_auf_w, soc_max, lade_max_w,
  *         drossel_min_w, notfall_s, notfall_w, speicher_zuerst, wirkung_s,
- *         anlage_max_w (0 = unbekannt)
- * $zust:  drossel_w, lade_soll_w, sp_probe_seit, sp_probe_lade, sp_sperre_bis
+ *         anlage_max_w (0 = unbekannt), speicher_extern, extern_wirkung_s
+ * $zust:  drossel_w, lade_soll_w, sp_probe_seit, sp_probe_lade, sp_sperre_bis,
+ *         ext_seit, ext_sperre_bis (nur mit speicher_extern)
  *
  * Rueckgabe: drossel_w, lade_soll_w, tat, anlass, ueberschuss_w, notfall,
  *            erzeugung_ersatz, speicher_folgt, sp_probe_seit, sp_probe_lade,
- *            sp_sperre_bis
+ *            sp_sperre_bis; mit speicher_extern zusaetzlich ext_seit,
+ *            ext_sperre_bis, extern (Urteil aus eb_extern_wartet)
  */
 function eb_regeln($mess, $cfg, $zust, $jetzt)
 {
@@ -211,6 +261,11 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
     $lade_max = max(0.0, eb_zahl(isset($cfg['lade_max_w']) ? $cfg['lade_max_w'] : 0, 0.0));
     $anlage_max = max(0.0, eb_zahl(isset($cfg['anlage_max_w']) ? $cfg['anlage_max_w'] : 0, 0.0));
     $lade_alt = max(0.0, eb_zahl(isset($zust['lade_soll_w']) ? $zust['lade_soll_w'] : 0, 0.0));
+    /* Speicher extern gefuehrt (Energie-1 C3): die Bremse stellt keinen
+     * Speicher, also fuehrt sie auch kein Ladesoll weiter. Ohne diese
+     * Betriebsart aendert sich hier nichts. */
+    $extern = !empty($cfg['speicher_extern']);
+    if ($extern) { $lade_alt = 0.0; }
 
     /* Die Erzeugung zu messen ist FREIWILLIG. Fehlt sie, tritt die zuletzt
      * gestellte Grenze an ihre Stelle - mehr als die kann die Anlage gerade
@@ -240,6 +295,14 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
         'sp_probe_lade' => 0.0,
         'sp_sperre_bis' => eb_zahl(isset($zust['sp_sperre_bis']) ? $zust['sp_sperre_bis'] : 0, 0.0),
     );
+    if ($extern) {
+        /* Nur in dieser Betriebsart gibt es die drei Felder - ohne sie bleibt
+         * die Rueckgabe Wort fuer Wort die bisherige. Jeder Zweig ausser dem
+         * Ueberschuss beendet die Folge (ext_seit 0); die Sperre bleibt. */
+        $erg['ext_seit'] = 0.0;
+        $erg['ext_sperre_bis'] = eb_zahl(isset($zust['ext_sperre_bis']) ? $zust['ext_sperre_bis'] : 0, 0.0);
+        $erg['extern'] = 'ruhe';
+    }
 
     /* Der Ueberschuss wird ausgerechnet, sobald ein Zaehlerwert da ist -
      * auch ein alter. Bleibt er unbekannt, steht dort NULL und nicht 0:
@@ -291,7 +354,30 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
          * Gefragt wird aber nur, solange der Speicher nachweislich folgt. */
         $luft = 0.0;
         $folgt = 1;
-        if (!empty($cfg['speicher_zuerst'])) {
+        $ext_teil = false;
+        if ($extern) {
+            /* Speicher extern gefuehrt: erst abwarten, ob Loxone den
+             * Ueberschuss in seine Speicher schiebt (eb_extern_wartet). Der
+             * eigene Speicherweg der Bremse ist in dieser Betriebsart aus. */
+            list($ewart, $egut, $eseit, $esperre, $eurteil) = eb_extern_wartet(
+                isset($mess['aufnahme_w']) ? $mess['aufnahme_w'] : null, $ueber, $zust, $jetzt,
+                isset($cfg['extern_wirkung_s']) ? $cfg['extern_wirkung_s'] : 60);
+            $erg['ext_seit'] = $eseit;
+            $erg['ext_sperre_bis'] = $esperre;
+            $erg['extern'] = $eurteil;
+            if ($ewart) {
+                if ($ueber - $egut <= $totband) {
+                    $erg['tat'] = EB_NICHTS;
+                    $erg['anlass'] = 'extern_wartet';
+                    return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
+                }
+                /* Mehr Ueberschuss, als Loxone aufnehmen kann: nur der Rest
+                 * wird abgeregelt. */
+                $ueber -= $egut;
+                $ext_teil = true;
+            }
+        }
+        if (!$extern && !empty($cfg['speicher_zuerst'])) {
             list($folgt, $ps, $pl, $sb) = eb_speicher_wirkt(
                 isset($mess['lade_ist']) ? $mess['lade_ist'] : 0,
                 $lade_alt, $zust, $jetzt,
@@ -331,6 +417,10 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
         $erg['tat'] = EB_DROSSEL;
         if ($erg['anlass'] === 'in_speicher') {
             $erg['anlass'] = 'speicher_voll_drossel';
+        } elseif ($ext_teil) {
+            $erg['anlass'] = 'extern_teil_drossel';
+        } elseif ($extern && in_array($erg['extern'], array('abgelaufen', 'gesperrt'), true)) {
+            $erg['anlass'] = 'extern_abgelaufen';
         } elseif (!empty($cfg['speicher_zuerst']) && !$folgt) {
             $erg['anlass'] = 'speicher_folgt_nicht';
         } else {
@@ -1098,6 +1188,54 @@ function eb_selbsttest($ausgabe = true)
            eb_wirkung(3000.0, 2950.0, 3000.0, 20.0, 25.0), -1);
     $pruef('und sie wird auch bedient',
            eb_wirkung(3000.0, 2890.0, 3000.0, 20.0, 25.0), 1);
+
+    // ---- Speicher extern gefuehrt (Energie-1 C3) ----
+    /* Loxone meldet ueber haus/energie/aufnahme_w, wie viel seine Speicher
+     * noch aufnehmen. Die Bremse wartet hoechstens extern_wirkung_s, stellt
+     * selbst keinen Speicher, und ohne frischen Wert regelt sie wie bisher. */
+    $ext = array_merge($cfg, array('speicher_extern' => 1, 'extern_wirkung_s' => 60));
+    $em = array('netz' => -1500, 'erzeugung' => 5000, 'soc' => 40, 'lade_ist' => 0, 'alter_s' => 3,
+                'aufnahme_w' => 2000);
+    $r = eb_regeln($em, $ext, array('drossel_w' => 5000, 'lade_soll_w' => 0), 1000);
+    $pruef('extern: Loxone meldet Aufnahme - nicht gedrosselt', $r['tat'], EB_NICHTS);
+    $pruef('extern: die Grenze bleibt stehen', $r['drossel_w'], 5000);
+    $pruef('extern: Anlass', $r['anlass'], 'extern_wartet');
+    $pruef('extern: die Wartezeit laeuft ab jetzt', $r['ext_seit'], 1000);
+    $pruef('extern: die Bremse stellt keinen Speicher', $r['lade_soll_w'], 0);
+    $r = eb_regeln($em, $ext, array('drossel_w' => 5000, 'ext_seit' => 1000), 1059);
+    $pruef('extern: nach 59 s wird weiter gewartet', $r['tat'], EB_NICHTS);
+    $pruef('extern: und die Wartezeit nicht neu gestartet', $r['ext_seit'], 1000);
+    $r = eb_regeln($em, $ext, array('drossel_w' => 5000, 'ext_seit' => 1000), 1060);
+    $pruef('extern: nach der Wartezeit wird gedrosselt', $r['drossel_w'], 3500);
+    $pruef('extern: Anlass nach der Wartezeit', $r['anlass'], 'extern_abgelaufen');
+    $pruef('extern: zehn Wartezeiten wird nicht mehr gewartet', $r['ext_sperre_bis'], 1660);
+    $r = eb_regeln($em, $ext, array('drossel_w' => 5000, 'ext_sperre_bis' => 1660), 1300);
+    $pruef('extern: waehrend der Sperre wird sofort gedrosselt', $r['drossel_w'], 3500);
+    $r0 = eb_regeln(array_merge($em, array('aufnahme_w' => 0)),
+                    array_merge($cfg, array('speicher_zuerst' => 0)), array('drossel_w' => 5000), 1000);
+    $r = eb_regeln(array_merge($em, array('aufnahme_w' => 0)), $ext, array('drossel_w' => 5000), 1000);
+    $pruef('extern: Aufnahme 0 - gedrosselt wie ohne Betriebsart', $r['drossel_w'], $r0['drossel_w']);
+    $pruef('extern: Aufnahme 0 - Anlass wie bisher', $r['anlass'], 'drosseln');
+    $r = eb_regeln(array_merge($em, array('aufnahme_w' => null)), $ext, array('drossel_w' => 5000), 1000);
+    $pruef('extern: ohne frischen Wert gedrosselt wie bisher', $r['drossel_w'], $r0['drossel_w']);
+    $pruef('extern: ohne frischen Wert sagt es das Urteil', $r['extern'], 'ohne_wert');
+    $r = eb_regeln(array_merge($em, array('netz' => -2000, 'aufnahme_w' => 500)), $ext,
+                   array('drossel_w' => 5000), 1000);
+    $pruef('extern: nur die gemeldete Aufnahme wird abgewartet', $r['drossel_w'], 3500);
+    $pruef('extern: Anlass Teildrosselung', $r['anlass'], 'extern_teil_drossel');
+    $r = eb_regeln(array_merge($em, array('netz' => -20)), $ext, array('drossel_w' => 5000, 'ext_seit' => 1000), 1030);
+    $pruef('extern: im Totband endet die Folge', $r['ext_seit'], 0);
+    $r = eb_regeln(array_merge($em, array('alter_s' => 120)), $ext, array('drossel_w' => 5000), 1000);
+    $pruef('extern: der Totmann bleibt der Totmann', $r['notfall'], 1);
+    $r = eb_regeln($em, $ext, array('drossel_w' => 5000, 'lade_soll_w' => 2000), 1000);
+    $pruef('extern: ein altes Ladesoll wird nicht weitergefuehrt', $r['lade_soll_w'], 0);
+    /* Ohne die Betriebsart: dieselbe Rueckgabe wie vor C3, auch wenn ein
+     * Wert aus Loxone daliegt. */
+    $ra = eb_regeln($em, $cfg, array('drossel_w' => 5000, 'lade_soll_w' => 0), 1000);
+    $rb = eb_regeln(array_diff_key($em, array('aufnahme_w' => 1)), $cfg,
+                    array('drossel_w' => 5000, 'lade_soll_w' => 0), 1000);
+    $pruef('ohne Betriebsart: aufnahme_w aendert nichts', json_encode($ra), json_encode($rb));
+    $pruef('ohne Betriebsart: keine neuen Felder', isset($ra['ext_seit']) ? 'da' : 'fehlt', 'fehlt');
 
     if ($ausgabe) {
         echo sprintf("\nEinspeisebremse-Kern %s: %d Faelle geprueft, %d Fehlschlaege.\n",

@@ -93,6 +93,12 @@ function eb_test_trocken()
         'alter_s'   => isset($stand['netz_alter']) && $stand['netz_alter'] !== null
                        ? $stand['netz_alter'] : -1,
     );
+    /* Energie-1 C3: derselbe Wert aus Loxone, den der Dienst zuletzt
+     * bewertet hat - null, wenn er nicht frisch war. */
+    if (!empty($cfg['speicher_extern'])) {
+        $mess['aufnahme_w'] = (isset($stand['aufnahme_anlass']) && $stand['aufnahme_anlass'] === 'gut'
+                               && isset($stand['aufnahme_w'])) ? $stand['aufnahme_w'] : null;
+    }
     $cfg['anlage_max_w'] = eb_anlage_max();
     $zust = array(
         'drossel_w'     => isset($stand['drossel_w']) ? $stand['drossel_w'] : 0,
@@ -101,6 +107,10 @@ function eb_test_trocken()
         'sp_probe_lade' => isset($stand['sp_probe_lade']) ? $stand['sp_probe_lade'] : 0,
         'sp_sperre_bis' => isset($stand['sp_sperre_bis']) ? $stand['sp_sperre_bis'] : 0,
     );
+    if (!empty($cfg['speicher_extern'])) {
+        $zust['ext_seit'] = isset($stand['ext_seit']) ? $stand['ext_seit'] : 0;
+        $zust['ext_sperre_bis'] = isset($stand['ext_sperre_bis']) ? $stand['ext_sperre_bis'] : 0;
+    }
     $r = eb_regeln($mess, $cfg, $zust, microtime(true));
 
     $taten = array(EB_NICHTS => 'TAT.NICHTS', EB_SPEICHER => 'TAT.SPEICHER',
@@ -121,6 +131,12 @@ function eb_test_trocken()
     if (!empty($r['erzeugung_ersatz'])) { $o[] = eb_klartext('TEST.T_ERSATZ'); }
     if ((int) $r['speicher_folgt'] === 0) { $o[] = eb_klartext('TEST.T_SPEICHER_NEIN'); }
     if ($r['notfall']) { $o[] = ''; $o[] = eb_klartext('TEST.T_NOTFALL'); }
+    if (!empty($cfg['speicher_extern'])) {
+        $o[] = sprintf('%-24s %s', eb_klartext('TEST.T_AUFNAHME'), $mess['aufnahme_w'] === null
+            ? '- (' . (isset($stand['aufnahme_anlass']) ? $stand['aufnahme_anlass'] : '-') . ')'
+            : ((int) round((float) $mess['aufnahme_w'])) . ' W');
+        $o[] = sprintf('%-24s %s', eb_klartext('TEST.T_EXTERN'), isset($r['extern']) ? $r['extern'] : '-');
+    }
 
     $steller = eb_steller();
     if ($steller) {
@@ -203,6 +219,11 @@ function eb_test_mqtt()
     $o[] = eb_klartext('TEST.MQ_THEMEN');
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
     foreach (eb_mqtt_themen() as $k => $unbenutzt) { $o[] = '  ' . $praefix . '/' . $k; }
+    /* Energie-1: die Haus-Themen, ohne Praefix und nie retained. */
+    $o[] = '';
+    $o[] = sprintf(eb_klartext('TEST.MQ_HAUS'),
+        $cfg['haus_netz_ein'] ? $ja : $nein, $cfg['speicher_extern'] ? $ja : $nein);
+    foreach (eb_haus_themen() as $k => $eb_hi) { $o[] = '  ' . $k . ' (' . $eb_hi[0] . ')'; }
 
     /* Stellbefehle ueber MQTT gehen ohne Retain hinaus; ein alter
      * zurueckbehaltener Wert wird beim ersten Stellen einmal abgeraeumt
@@ -548,7 +569,7 @@ function eb_selbstpruefung()
 
     /* Der Speicherzweig wird nur beurteilt, wenn er ueberhaupt gewaehlt ist -
      * sonst waere die Zeile eine Beschwichtigung. */
-    if (!empty($cfg['speicher_zuerst'])) {
+    if (!empty($cfg['speicher_zuerst']) && empty($cfg['speicher_extern'])) {
         $gemessen = ($cfg['q_lade']['art'] !== 'aus');
         $z[] = eb_pruefzeile(eb_klartext('SP.SPEICHER_MESSUNG'), $gemessen ? 1 : 0,
             $gemessen ? $ja : eb_klartext('SP.SPEICHER_UNGEMESSEN'));
@@ -559,6 +580,32 @@ function eb_selbstpruefung()
         $sp = eb_speicher_steller();
         $z[] = eb_pruefzeile(eb_klartext('SP.SPEICHER_WEG'), $sp ? 1 : -1,
             $sp ? $sp['name'] : eb_klartext('SP.SPEICHER_WEG_FEHLT'));
+    }
+
+    /* ---- Energie-1: Speicher extern gefuehrt und Haus-Thema ----
+     * Nur, wenn eingeschaltet - sonst waere die Zeile eine Beschwichtigung.
+     * Kommt der Wert aus Loxone nicht frisch an, regelt die Bremse wie ohne
+     * die Betriebsart. Das ist sicher, aber nicht das, was eingeschaltet
+     * ist: ein Kreuz. */
+    if (!empty($cfg['speicher_extern'])) {
+        $eb_aa = isset($stand['aufnahme_anlass']) ? (string) $stand['aufnahme_anlass'] : '';
+        $eb_gut = ($eb_aa === 'gut');
+        $z[] = eb_pruefzeile(eb_klartext('SP.EXTERN_WERT'), $eb_gut ? 1 : 0,
+            $eb_gut ? sprintf(eb_klartext('SP.EXTERN_WERT_GUT'),
+                              (int) round((float) $stand['aufnahme_w']), (int) round((float) $stand['aufnahme_alter']))
+                    : sprintf(eb_klartext('SP.EXTERN_WERT_FEHLT'), $eb_aa !== '' ? $eb_aa : '-'));
+        $eb_spw = $cfg['sp_steller'];
+        $eb_weg = ($eb_spw['art'] !== 'aus' && empty($eb_spw['stilllegen']));
+        $z[] = eb_pruefzeile(eb_klartext('SP.EXTERN_SPEICHERWEG'), $eb_weg ? 0 : 1,
+            eb_klartext($eb_weg ? 'SP.EXTERN_SPEICHERWEG_JA' : 'SP.EXTERN_SPEICHERWEG_NEIN'));
+    }
+    if (!empty($cfg['haus_netz_ein'])) {
+        $eb_na = (isset($stand['netz_alter']) && is_numeric($stand['netz_alter'])) ? (float) $stand['netz_alter'] : -1.0;
+        $eb_nf = (isset($stand['netz']) && $stand['netz'] !== null && $eb_na >= 0.0
+                  && $eb_na <= (float) $cfg['notfall_s']
+                  && strpos((string) (isset($stand['netz_anlass']) ? $stand['netz_anlass'] : ''), 'letzter_wert_') !== 0);
+        $z[] = eb_pruefzeile(eb_klartext('SP.HAUS_NETZ'), $eb_nf ? 1 : 0,
+            eb_klartext($eb_nf ? 'SP.HAUS_NETZ_GUT' : 'SP.HAUS_NETZ_FEHLT'));
     }
 
     /* Der Ersatzzaehler: ein Ersatzweg, den niemand sieht, wird
@@ -637,6 +684,7 @@ function eb_selbstpruefung()
         if ($cfg[$k]['art'] === 'mqtt') { $braucht_mqtt = true; }
     }
     foreach ($steller as $s) { if ($s['art'] === 'mqtt') { $braucht_mqtt = true; } }
+    if (!empty($cfg['speicher_extern']) || !empty($cfg['haus_netz_ein'])) { $braucht_mqtt = true; }
     if ($braucht_mqtt) {
         @exec('command -v mosquitto_sub 2>/dev/null', $a1, $r1);
         @exec('command -v mosquitto_pub 2>/dev/null', $a2, $r2);
@@ -753,10 +801,11 @@ function eb_test_wenn()
     $erz  = $hol('w_erz', null);
     $soc  = $hol('w_soc', -1.0);
     $lade = $hol('w_lade', 0.0);
+    $aufn = $hol('w_aufn', null);
     if ($netz === null && (!isset($_POST['w_netz']) || trim((string) $_POST['w_netz']) !== '')) {
         return eb_klartext('TEST.W_KEINE_ZAHL');
     }
-    foreach (array('w_erz' => $erz, 'w_soc' => $soc, 'w_lade' => $lade) as $k => $v) {
+    foreach (array('w_erz' => $erz, 'w_soc' => $soc, 'w_lade' => $lade, 'w_aufn' => $aufn) as $k => $v) {
         if ($v === null && trim((string) (isset($_POST[$k]) ? $_POST[$k] : '')) !== '') {
             return eb_klartext('TEST.W_KEINE_ZAHL');
         }
@@ -769,6 +818,8 @@ function eb_test_wenn()
     $mess = array('netz' => $netz, 'erzeugung' => $erz,
                   'soc' => ($soc === null ? -1.0 : $soc),
                   'lade_ist' => ($lade === null ? 0.0 : $lade), 'alter_s' => 1);
+    /* Energie-1 C3: leer heisst "kein frischer Wert aus Loxone". */
+    if (!empty($cfg['speicher_extern'])) { $mess['aufnahme_w'] = $aufn; }
     /* Als Ausgangslage die zuletzt gestellte Grenze, sonst die Anlagenspitze -
      * genau wie der Dienst beim Einschalten. */
     $stand = eb_stand();
@@ -787,6 +838,10 @@ function eb_test_wenn()
     $o[] = sprintf('%-26s %d W', eb_klartext('TEST.W_LADE'), (int) $lade);
     $o[] = sprintf('%-26s %d W', eb_klartext('TEST.W_START'), (int) $start);
     $o[] = sprintf('%-26s %d W', eb_klartext('TEST.W_ZIEL'), (int) $cfg['ziel_w']);
+    if (!empty($cfg['speicher_extern'])) {
+        $o[] = sprintf('%-26s %s', eb_klartext('TEST.W_AUFNAHME'),
+            $aufn === null ? eb_klartext('TEST.W_UNGEMESSEN') : (int) $aufn . ' W');
+    }
     $o[] = '';
     $o[] = sprintf('%-26s %s', eb_klartext('TEST.T_TAT'),
         eb_klartext(isset($taten[$r['tat']]) ? $taten[$r['tat']] : 'TAT.NICHTS'));

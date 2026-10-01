@@ -3,9 +3,32 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.28 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.29 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.29
+
+Energie-1 Teile C3–C5 (Verbesserungsliste `Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 25).
+Gemessen am Regelkern (20 000 Zufallsfälle), am Dienst mit Broker-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Wechselrichter.
+
+* **Neue Betriebsart „Speicher extern geführt (Loxone)“, ab Werk aus:** Die Bremse
+  wartet bis zur eingestellten Wartezeit (Vorgabe 60 s, 5–600 s) auf den Teil des
+  Überschusses, den Loxone als Speicheraufnahme meldet
+  (`haus/energie/aufnahme_w` und `haus/energie/aufnahme_ts`), und drosselt den
+  Rest sofort. Sie stellt selbst keinen Speicher. Ohne frischen Wert regelt sie
+  wie bisher, mit Hinweis im Protokoll und im Reiter Test. Bei ausgeschalteter
+  Betriebsart ist das Regelverhalten unverändert.
+* **Haus-Thema `haus/energie/netz_w` mit Zeitstempel** (ab Werk aus): der frisch
+  gemessene Netzwert, höchstens alle 5 s, nie retained.
+* **Baustein-Liste für Loxone** im Reiter „Einbindung in Loxone“ (Formeln für
+  Speicher-Restaufnahme, Zeitstempel), dazu der Hinweis, für Überschussrechnungen
+  `Site.P_PV` statt Register 40091 zu nehmen.
+* Ein eingetragener Speicherweg an ein LoxBerry-Plugin trägt
+  `&von=einspeisebremse` (Schreiber-Wache ab Marstek 1.1.19). Betriebsart
+  „extern geführt“ zusammen mit einem eigenen Speicherweg wird beim Speichern
+  beanstandet.
+* Alte Sicherungen werden weiter angenommen.
 
 ## Neu in 0.9.28
 
@@ -431,9 +454,64 @@ mehr Luft hat. Ohne diese Runden summierten sich die gestellten Grenzen auf
 weniger als die erlaubte, und die Anlage bliebe dauerhaft zu scharf
 abgeregelt.
 
+## Speicher extern geführt (Loxone) und Haus-Themen
+
+Zwei Einstellungen für das Zusammenspiel mit Loxone (Energie-1, Weg C: Loxone
+ist die eine Hand). Beide sind ab Werk **aus**; ohne sie regelt die Bremse
+genau wie bisher.
+
+**Speicher extern geführt** (Reiter *Einstellungen*). Führt Loxone die
+Speicher — im Haus die Vorrangkette Fronius-Batterie → Marstek → Wallbox —,
+regelte die Bremse bisher ab, bevor der Speicher den Überschuss übernommen
+hatte. Mit dieser Betriebsart liest sie `haus/energie/aufnahme_w` (wie viel
+die Speicher gerade noch zusätzlich aufnehmen, in W) und
+`haus/energie/aufnahme_ts` (Unix-Sekunden oder Loxone-Zeit seit 01.01.2009).
+Ist der Wert frisch und größer als null, wartet sie bis zur *Wartezeit für
+Loxone* (`extern_wirkung_s`, 5–600 s, Vorgabe 60 s), ob die Einspeisung fällt,
+und regelt erst dann ab — abgewartet wird nur der Teil, den Loxone als Aufnahme
+meldet, der Rest wird sofort abgeregelt. Steht der Überschuss nach der
+Wartezeit noch, wird abgeregelt und zehn Wartezeiten lang nicht mehr gewartet.
+
+* Die Bremse stellt in dieser Betriebsart **keinen** Speicher, auch nicht beim
+  Ausschalten. Ein eingetragener Speicherweg wäre der zweite Schreiber neben
+  Loxone und sperrt Speichern und Einschalten.
+* Frisch heißt: der Zeitstempel ist höchstens so alt wie das *Höchstalter der
+  Nebenwerte* (`quelle_alter_s`, Vorgabe 300 s), am Inhalt und am Empfang
+  gemessen. Fehlt der Wert, ist er alt oder 0, regelt die Bremse wie ohne
+  diese Betriebsart; Reiter *Test* (Zeile „Wert aus Loxone“) und Protokoll
+  sagen es.
+* 60 s, weil der Venus E zeitweise 20–60 s schweigt; die Reaktionszeit des
+  Speichers vom Loxone-Sollwert bis zur Ladeleistung ist am Gerät noch nicht
+  gemessen.
+* Die Loxone-Bausteine (Formel für die Restaufnahme, virtueller Ausgang an den
+  UDP-Eingang des MQTT-Gateways, Zeitstempel alle 10 s) stehen im Reiter
+  *Einbindung in Loxone*. Beide Themen mit `publish` senden, nie `retain`.
+
+**Haus-Thema Netzzähler** (Reiter *MQTT*). Die Bremse sendet ihren
+Netzzählerwert als `haus/energie/netz_w` (plus = Bezug, minus = Einspeisung)
+und den Zeitpunkt der Messung als `haus/energie/ts` — höchstens alle 5 s, nur
+einen frisch gemessenen Wert, **nie retained** (Messwert und Zeitstempel,
+Entscheidung 25). Fällt der Zähler aus, bleibt `ts` stehen. Weil nichts
+zurückbehalten wird, gibt es beim Abschalten und Deinstallieren nichts
+abzuräumen; fremde Haus-Themen fasst die Bremse nie an.
+
+**Speicherweg an ein LoxBerry-Plugin.** Spricht der Speicherweg den Endpunkt
+eines LoxBerry-Plugins an (`http://…/plugins/<ordner>/…`, etwa MarstekVenus),
+hängt die Bremse `&von=einspeisebremse` an. Die Schreiber-Wache dort
+unterscheidet sie so von Loxone und der aWATTar-Kopplung. An die Adresse eines
+fremden Geräts wird nichts angehängt.
+
+**Erzeugung beim Hybrid: 40091 gegen `Site.P_PV`.** Register 40091 (Vorlage
+„Fronius Symo Hybrid, über Modbus TCP“) ist die AC-Ausgangsleistung
+einschließlich Batterieentladung und nachts als „Erzeugung“ zu hoch. Für jede
+Überschuss- oder PV-Rechnung in Loxone gilt `Site.P_PV`. Die Bremse rechnet
+ihre Grenze trotzdem aus 40091, weil WMaxLimPct genau diese Ausgangsleistung
+begrenzt. Bei vollem Speicher ist `P_Akku` nie 0 (−4 bis −13 W): „voll“ nur am
+Ladestand erkennen.
+
 ## Prüfstand
 
-* `php bin/eb_dienst.php --selbsttest` — 142 Fälle des Regelkerns, ohne
+* `php bin/eb_dienst.php --selbsttest` — 168 Fälle des Regelkerns, ohne
   Anlage und ohne Netz. Die Zahl steht in der Schlusszeile des Laufs;
   wer sie hier ändert, liest sie dort ab.
 * Reiter *Test*, **Selbstprüfung** — eine stehende Liste, die ohne Loxone
