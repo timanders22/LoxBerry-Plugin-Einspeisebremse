@@ -69,9 +69,17 @@ chmod 700 "$PCONFIG" 2>/dev/null
 [ -f "$PCONFIG/einspeisebremse.json" ] || echo '{}' > "$PCONFIG/einspeisebremse.json"
 chmod 600 "$PCONFIG/einspeisebremse.json" 2>/dev/null
 
-# Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
+# Sicherung zurueckspielen - NUR bei einer Aktualisierung (X-1, Entscheidung 1
+# vom 29.09.2026). Bis 0.9.28 stand hier "uebersteht Update UND
+# Neuinstallation": eine Neuinstallation holte Aktionstoken, Stellglieder und
+# den Schalter der Regelung einer frueheren Installation zurueck. Ob es eine
+# Aktualisierung ist, sagt allein die Marke aus preupgrade.sh (kein
+# Altersvergleich). Bei einer Neuinstallation hat preinstall.sh die
+# Zweitschrift schon nach .alt gelegt; liegt sie trotzdem noch da, wird sie
+# nicht eingespielt und gemeldet.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/einspeisebremse.json"
+EB_MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 # Zurueckgespielt wird nur eine Zweitschrift MIT Inhalt, und nur ueber eine
 # leere Datei (eine gute wird nie ueberschrieben). Bis 0.9.24 wurde auch eine
 # Zweitschrift "{}" kopiert und als "wiederhergestellt" gemeldet - eine
@@ -88,7 +96,14 @@ exit(is_array($d) && array_key_exists("aktionstoken", $d) ? 0 : 1);' -- "$1" >/d
     [ "$eb_rc" = 0 ] || [ "$eb_rc" = 1 ] || return 2
     return "$eb_rc"
 }
-if [ -f "$BK" ]; then
+if [ -f "$BK" ] && [ ! -f "$EB_MARKE" ]; then
+    # Das geschieht nur, wenn preinstall.sh sie nicht verschieben konnte. Die
+    # Selbstheilung in eb_config() liest diese Datei bei leerer Konfiguration
+    # im Takt - der Minutentakt in der Luecke vor diesem Skript kann sie also
+    # schon uebernommen haben (in WSL gemessen, Fall N2). Deshalb laut und
+    # ohne zu behaupten, sie sei nicht in Kraft.
+    echo "<WARNING> Neuinstallation: unter $BK liegt noch die Zweitschrift einer frueheren Installation. Dieses Skript spielt sie NICHT ein; die Selbstheilung des Dienstes holt sie aber bei leerer Konfiguration zurueck (womoeglich schon geschehen). Bitte die Datei von Hand entfernen und die Einstellungen in der Oberflaeche pruefen."
+elif [ -f "$BK" ]; then
     INHALT=$(cat "$CF" 2>/dev/null)
     if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
         eb_heil "$BK"
@@ -207,7 +222,13 @@ if [ -f "$SPERRE" ]; then
         echo "<INFO> Ein Dienst ohne PID-Datei lief waehrend der Installation und wurde beendet."
     fi
 fi
-if [ -d "$LANG_SICHER" ]; then
+# Nur bei einer Aktualisierung (Marke, FRISCH): eine Upgrade-Sicherung ohne
+# Marke stammt aus einer frueheren Installation (X-1). Bis 0.9.28 kam sie auch
+# dann zurueck, sobald die Zieldatei leer war - bei einer Neuinstallation also
+# immer.
+if [ -z "$FRISCH" ] && [ -d "$LANG_SICHER" ]; then
+    echo "<WARNING> Neuinstallation: die Langzeitwerte einer frueheren Installation liegen noch unter $LANG_SICHER und wurden NICHT eingespielt. Bitte von Hand entfernen."
+elif [ -d "$LANG_SICHER" ]; then
     for LANG_F in verlauf.json bilanz.json retain_stellbefehl.json; do
         [ -f "$LANG_SICHER/$LANG_F" ] || continue
         ZIEL="$BASE/data/plugins/$PFOLDER/$LANG_F"

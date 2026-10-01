@@ -3,9 +3,26 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.27 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.28 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.28
+
+Verbesserungen aus dem Durchgang (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 16 und 19). Gemessen an
+Attrappen unter PHP 7.4, 8.3 und 8.5; das Regelverhalten ist vorher und nachher
+gleich (146 Selbsttestfälle, sieben Szenarien). Nicht am Gerät.
+
+* **Eine Neuinstallation spielt keine Einstellungen oder Langzeitwerte einer
+  früheren Installation mehr ein** (bis 0.9.27 holte schon der erste Minutentakt
+  Token und `ein=1` zurück). Sie liegen als `.alt`, die Deinstallation räumt sie
+  ab. Ein Upgrade bleibt wie bisher.
+* **Bei einer Beanstandung wird nichts gespeichert;** ein leeres Zahlfeld, ein
+  leerer Faktor oder ein leeres MQTT-Thema wird beanstandet statt still ersetzt.
+  Die eingetippten Werte stehen wieder im Formular, das Feld ist markiert.
+* „Einstellungen sichern“ warnt, wenn das Zurückspielen die Datei abweisen würde.
+* Der Endpunkt meldet `;UNVERAENDERT=1`, wenn Regelung oder Stufe schon so stehen.
 
 ## Neu in 0.9.27
 

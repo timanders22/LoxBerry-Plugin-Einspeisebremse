@@ -1669,13 +1669,16 @@ function eb_meldung_e($t)
  * Einmalmeldung nach dem POST (Regeln/04): eine Datei im Datenordner,
  * 0600 (die Testausgabe kann das Wortzeichen tragen), beim folgenden GET
  * gelesen UND geloescht; aelter als 120 s wird verworfen.
+ * Seit dem B-Nachzug (X-2) reisen darin nach einer Beanstandung auch die
+ * eingetippten Werte des einen Formulars ('eingaben', sonst null).
  */
-function eb_einmal_schreiben($meldungen, $fehler, $test)
+function eb_einmal_schreiben($meldungen, $fehler, $test, $eingaben = null)
 {
     $p = eb_paths();
     return eb_json_schreiben($p['datadir'] . '/einmalmeldung.json', array(
         'zeit' => time(), 'meldungen' => array_values($meldungen),
-        'fehler' => array_values($fehler), 'test' => (string) $test), 0600);
+        'fehler' => array_values($fehler), 'test' => (string) $test,
+        'eingaben' => is_array($eingaben) ? $eingaben : null), 0600);
 }
 
 function eb_einmal_lesen()
@@ -1689,6 +1692,7 @@ function eb_einmal_lesen()
         'meldungen' => isset($d['meldungen']) && is_array($d['meldungen']) ? $d['meldungen'] : array(),
         'fehler' => isset($d['fehler']) && is_array($d['fehler']) ? $d['fehler'] : array(),
         'test' => isset($d['test']) ? (string) $d['test'] : '',
+        'eingaben' => isset($d['eingaben']) && is_array($d['eingaben']) ? $d['eingaben'] : array(),
     );
 }
 
@@ -2031,9 +2035,11 @@ function eb_wert_pruefen($k, $w)
  * Deshalb jetzt drei Wachen: alle Schluessel muessen da sein, jeder Wert
  * wird geprueft, und der lesbare Kopf wird uebergangen statt beanstandet.
  */
-function eb_sicherung_lesen($roh)
+function eb_sicherung_lesen($roh, &$namen = null)
 {
     $mangel = array();
+    // X-3: die Namen der beanstandeten Schluessel, nie ihre Werte.
+    $namen = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         return array(null, array(eb_t('EINST.SICH_KEIN_JSON')), 0);
@@ -2048,6 +2054,7 @@ function eb_sicherung_lesen($roh)
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(eb_t('EINST.SICH_FREMD'),
                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            $namen[] = (string) $k;
             continue;
         }
         $grund = eb_wert_taugt($w) ? eb_wert_pruefen($k, $w) : 'unbrauchbarer Wert';
@@ -2055,6 +2062,7 @@ function eb_sicherung_lesen($roh)
             $mangel[] = sprintf(eb_t('EINST.SICH_WERT'),
                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($grund, ENT_QUOTES, 'UTF-8'));
+            $namen[] = (string) $k;
             continue;
         }
         $neu[$k] = $w;
@@ -2071,6 +2079,7 @@ function eb_sicherung_lesen($roh)
         if (!array_key_exists($k, $daten)) { $fehlt[] = $k; }
     }
     if ($fehlt && $anzahl > 0) {
+        $namen = array_merge($namen, $fehlt);
         $mangel[] = sprintf(eb_t('EINST.SICH_FEHLT'),
             htmlspecialchars(implode(', ', $fehlt), ENT_QUOTES, 'UTF-8'));
     }
@@ -2097,7 +2106,7 @@ function eb_sicherung_lesen($roh)
  * uebergeht ihn. Ohne den Hinweis liegt eine Datei mit dem Aktionstoken
  * im Download-Ordner, und niemand weiss es.
  */
-function eb_sicherung_bauen($cfg)
+function eb_sicherung_bauen($cfg, $pruefen = true)
 {
     /* Keine Fassungsnummer im Kopf: die steht in diesem Haus an genau
      * einer Stelle (plugin.cfg, release.cfg, prerelease.cfg, README), und
@@ -2108,8 +2117,41 @@ function eb_sicherung_bauen($cfg)
         '_plugin'  => 'einspeisebremse',
         '_stand'   => date('Y-m-d H:i:s'),
     );
+    /* X-3 (B-Nachzug, 01.10.2026): Wuerde das eigene Zurueckspielen diese
+     * Datei abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert
+     * wird sie trotzdem vollstaendig. */
+    if ($pruefen) {
+        $eb_namen = eb_rueckspiel_altwerte($cfg);
+        if ($eb_namen) {
+            $kopf['_warnung'] = sprintf(eb_klartext('EINST.SICH_WARN_KOPF'), implode(', ', $eb_namen));
+        }
+    }
     return json_encode($kopf + $cfg,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * X-3: Welche Einstellungen wuerden beim Zurueckspielen der EIGENEN Sicherung
+ * abgewiesen? Gebaut wird genau die Datei, die "Einstellungen sichern"
+ * liefert, und durch dieselben Wachen geschickt wie beim Zurueckspielen:
+ * eb_sicherung_lesen() und - wie der Handler in htmlauth/index.php - "schaltet
+ * ein, hat aber einen sperrenden Mangel". Rueckgabe: Namen (nie Werte), leer
+ * heisst "wuerde angenommen".
+ */
+function eb_rueckspiel_altwerte($cfg)
+{
+    $js = eb_sicherung_bauen($cfg, false);
+    if ($js === false) { return array(); }     // Sichern meldet dann selbst SICH_SCHREIBFEHLER
+    $namen = array();
+    $erg = eb_sicherung_lesen($js, $namen);
+    $neu = $erg[0];
+    if ($neu !== null && !empty($neu['ein']) && eb_maengel_sperren(eb_maengel($neu))) {
+        $namen[] = 'ein';
+    }
+    $namen = array_values(array_unique(array_map('strval', $namen)));
+    sort($namen);
+    if ($neu === null && !$namen) { $namen[] = eb_klartext('EINST.SICH_GANZE_DATEI'); }
+    return $namen;
 }
 
 

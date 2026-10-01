@@ -13,6 +13,11 @@
  *   ?token=<TOKEN>&aktion=ein&wert=0|1   die Regelung ein- oder ausschalten
  *   ?token=<TOKEN>&aktion=stufe&wert=0|1|2  die Zielstufe waehlen
  *
+ * Gilt der verlangte Wert schon, wird nichts geschrieben und nichts
+ * protokolliert, und die Antwort traegt ";UNVERAENDERT=1" (X-7,
+ * Entscheidung 19): EIN=1;UNVERAENDERT=1 bzw. STUFE=1;ZIEL=300;UNVERAENDERT=1.
+ * Verglichen wird mit der gespeicherten Konfiguration - sie ist der Zustand.
+ *
  * Der Schalter ist die EINZIGE Handlung, die von aussen moeglich ist - und
  * er ist es mit Bedacht: eine Wallbox oder ein Notstromfall soll die Bremse
  * aus Loxone heraus abschalten koennen. Einen Sollwert von aussen gibt es
@@ -34,7 +39,10 @@ header('Cache-Control: no-store');
  * von Hand geleerte Datei kam hinter dem Ruecken des Bedieners wieder. */
 $eb_cfg = eb_config(false);
 $eb_soll = (string) $eb_cfg['aktionstoken'];
-$eb_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+/* Nur eine Zeichenkette ist ein Token. (string) machte aus token[]=... das
+ * Wort "Array" - abgewiesen, aber mit einer PHP-Warnung je Aufruf (Klasse 12,
+ * gemessen 01.10.2026). */
+$eb_ist = (isset($_GET['token']) && is_string($_GET['token'])) ? $_GET['token'] : '';
 
 /* ---- Selbsttest ----
  * Ein Wortzeichen muss sich pruefen lassen, OHNE dass etwas passiert.
@@ -107,7 +115,8 @@ if ($eb_aktion === 'ein') {
             exit;
         }
     }
-    if ((int) $eb_cfg['ein'] !== $neu) {
+    $eb_gleich = ((int) $eb_cfg['ein'] === $neu);     // X-7
+    if (!$eb_gleich) {
         /* EIN Feld, unter Sperre. Frueher schrieb der Endpunkt den ganzen
          * Stand zurueck, den er vor der Aenderung gelesen hatte - wer
          * gleichzeitig in der Oberflaeche speicherte, verlor seine
@@ -120,7 +129,7 @@ if ($eb_aktion === 'ein') {
         eb_log('Regelung ueber den Endpunkt ' . ($neu ? 'eingeschaltet' : 'ausgeschaltet') . '.');
     }
     /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei. */
-    echo "EIN=" . (int) eb_config(false)['ein'] . "\n";
+    echo "EIN=" . (int) eb_config(false)['ein'] . ($eb_gleich ? ';UNVERAENDERT=1' : '') . "\n";
     exit;
 }
 
@@ -139,7 +148,8 @@ if ($eb_aktion === 'stufe') {
         exit;
     }
     $neu = (int) $roh;
-    if ((int) $eb_cfg['stufe'] !== $neu) {
+    $eb_gleich = ((int) $eb_cfg['stufe'] === $neu);     // X-7
+    if (!$eb_gleich) {
         /* Wie bei 'ein': EIN Feld, unter Sperre. */
         if (!eb_config_feld_setzen('stufe', $neu)) {
             http_response_code(500);
@@ -150,7 +160,8 @@ if ($eb_aktion === 'stufe') {
     }
     /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei. */
     $eb_frisch = eb_config(false);
-    echo "STUFE=" . (int) $eb_frisch['stufe'] . ";ZIEL=" . (int) eb_ziel_w($eb_frisch) . "\n";
+    echo "STUFE=" . (int) $eb_frisch['stufe'] . ";ZIEL=" . (int) eb_ziel_w($eb_frisch)
+        . ($eb_gleich ? ';UNVERAENDERT=1' : '') . "\n";
     exit;
 }
 

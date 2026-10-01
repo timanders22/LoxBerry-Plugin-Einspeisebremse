@@ -55,6 +55,149 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $eb_rei
 
 $eb_meldungen = array();
 $eb_fehler = array();
+$eb_eingaben_post = null;     // X-2: die Eingaben eines beanstandeten Formulars
+
+/* ---------- X-2: Eingaben nach einer Beanstandung (B-Nachzug, 01.10.2026) ----------
+ *
+ * Regeln/04, "Nach einer Beanstandung stehen die eingetippten Werte wieder im
+ * Formular". Mit der Einmalmeldung reisen unter 'eingaben' die Felder des EINEN
+ * beanstandeten Formulars und die Namen der beanstandeten Felder. In diesen
+ * Formularen steht kein Geheimnis: das Aktionstoken hat kein Eingabefeld, das
+ * Formularmerkmal steht in keiner Liste unten. Ein Wert, der kein gueltiges
+ * UTF-8 ist oder laenger als 4096 Byte, reist nicht mit; sein Feld zeigt dann
+ * den gespeicherten Wert (und bleibt markiert). */
+function eb_eingabe_felder($formular)
+{
+    if ($formular === 'mqtt') {
+        return array('mqtt_ein', 'mqtt_topic');
+    }
+    if ($formular === 'vorlage') {
+        return array('vorlage_quellen', 'vq_ziel', 'vq_wert');
+    }
+    if ($formular === 'einstellungen') {
+        $f = array();
+        foreach (array_keys(eb_quellenfelder()) as $k) {
+            foreach (array('_art', '_adresse', '_pfad', '_faktor', '_inv') as $s) { $f[] = $k . $s; }
+        }
+        return array_merge($f, eb_eingabe_reihen(), array(
+            'sp_name', 'sp_art', 'sp_einheit', 'sp_spitze', 'sp_still', 'sp_adresse', 'sp_inhalt',
+            'ziel_w', 'totband_w', 'rampe_ab_w', 'rampe_auf_w', 'drossel_min_w', 'notfall_s',
+            'notfall_w', 'frei_w', 'lade_max_w', 'soc_max', 'wirkung_s', 'takt', 'quelle_alter_s',
+            'ziel1_w', 'ziel2_w', 'speicher_zuerst', 'bilanz_ein', 'verlauf_ein'));
+    }
+    return array();
+}
+/* Die Felder mit Zeilenindex (Stellglieder, 0 bis EB_STELLER-1). */
+function eb_eingabe_reihen()
+{
+    return array('s_name', 's_art', 's_einheit', 's_spitze', 's_anteil', 's_still',
+                 's_adresse', 's_inhalt', 's_auffrisch');
+}
+/* Ein einzelner Wert, der mitreisen darf: Zeichenkette, UTF-8, hoechstens 4096 Byte. */
+function eb_eingabe_tauglich($w)
+{
+    return is_string($w) && strlen($w) <= 4096 && preg_match('//u', $w) === 1;
+}
+/* Ein Feld beanstanden (Formularname, bei Zeilen mit Index "s_art[1]");
+ * ohne Argument die Liste. null tut nichts. */
+function eb_bean($feld = null)
+{
+    static $liste = array();
+    if ($feld !== null && $feld !== '' && !in_array((string) $feld, $liste, true)) {
+        $liste[] = (string) $feld;
+    }
+    return $liste;
+}
+/* Die Eingaben eines Formulars aus $_POST sammeln - nur die Felder der Liste. */
+function eb_eingaben_sammeln($formular)
+{
+    $werte = array();
+    $reihen = eb_eingabe_reihen();
+    foreach (eb_eingabe_felder($formular) as $f) {
+        if (!isset($_POST[$f])) { continue; }
+        $w = $_POST[$f];
+        if (in_array($f, $reihen, true)) {
+            if (!is_array($w)) { continue; }
+            $zeilen = array();
+            foreach ($w as $k => $v) {
+                if (!preg_match('/^\d{1,2}\z/', (string) $k) || (int) $k >= EB_STELLER) { continue; }
+                if (eb_eingabe_tauglich($v)) { $zeilen[(string) (int) $k] = $v; }
+            }
+            $werte[$f] = $zeilen;
+        } elseif (eb_eingabe_tauglich($w)) {
+            $werte[$f] = $w;
+        }
+    }
+    return array('formular' => $formular, 'werte' => $werte, 'falsch' => eb_bean());
+}
+/* Beim GET: die Eingaben aus der Einmalmeldung pruefen (Form, Felder der
+ * Liste, nichts anderes) und fuer die Seite ablegen. Ohne Argument: der Stand. */
+function eb_eingaben($setzen = null)
+{
+    static $e = null;
+    if ($setzen !== null) {
+        $e = null;
+        if (is_array($setzen) && isset($setzen['formular'], $setzen['werte'], $setzen['falsch'])
+            && is_string($setzen['formular']) && is_array($setzen['werte'])
+            && is_array($setzen['falsch'])) {
+            $erlaubt = eb_eingabe_felder($setzen['formular']);
+            $werte = array();
+            foreach ($setzen['werte'] as $f => $w) {
+                if (!in_array((string) $f, $erlaubt, true)) { continue; }
+                if (is_array($w)) {
+                    $werte[$f] = array();
+                    foreach ($w as $k => $v) { if (eb_eingabe_tauglich($v)) { $werte[$f][(string) $k] = $v; } }
+                } elseif (eb_eingabe_tauglich($w)) {
+                    $werte[$f] = $w;
+                }
+            }
+            $falsch = array();
+            foreach ($setzen['falsch'] as $n) {
+                if (is_string($n) && preg_match('/^[a-z0-9_]+(\[\d{1,2}\])?\z/', $n)) { $falsch[] = $n; }
+            }
+            if ($erlaubt) {
+                $e = array('formular' => $setzen['formular'], 'werte' => $werte, 'falsch' => $falsch);
+            }
+        }
+    }
+    return $e;
+}
+/* Gilt fuer dieses Feld eine Eingabe? Nur, wenn es zum beanstandeten Formular gehoert. */
+function eb_eingabe_aktiv($feld)
+{
+    $e = eb_eingaben();
+    return $e !== null && in_array($feld, eb_eingabe_felder($e['formular']), true);
+}
+/* Wert eines Text- oder Auswahlfelds: die Eingabe, sonst der gespeicherte Wert. */
+function eb_w($feld, $gespeichert, $idx = null)
+{
+    if (eb_eingabe_aktiv($feld)) {
+        $e = eb_eingaben();
+        $w = isset($e['werte'][$feld]) ? $e['werte'][$feld] : null;
+        if ($idx !== null) {
+            $w = (is_array($w) && isset($w[(string) (int) $idx])) ? $w[(string) (int) $idx] : null;
+        }
+        if (is_string($w)) { return $w; }
+    }
+    return (string) $gespeichert;
+}
+/* Haken: nach einer Beanstandung so, wie er abgeschickt wurde. */
+function eb_h($feld, $gespeichert, $idx = null)
+{
+    if (!eb_eingabe_aktiv($feld)) { return !empty($gespeichert); }
+    $e = eb_eingaben();
+    $w = isset($e['werte'][$feld]) ? $e['werte'][$feld] : null;
+    if ($idx !== null) { return is_array($w) && isset($w[(string) (int) $idx]); }
+    return $w !== null;
+}
+/* Markierung eines beanstandeten Felds (Attribute, schon maskiert). */
+function eb_m($feld, $idx = null)
+{
+    $e = eb_eingaben();
+    $n = (string) $feld . ($idx !== null ? '[' . (int) $idx . ']' : '');
+    return ($e !== null && in_array($n, $e['falsch'], true))
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
 
 /* ---------------------------------------------------------------- *
  * Der Wachposten - EIN Posten, vor allen Handlern.
@@ -85,6 +228,7 @@ if (!$eb_post) {
         $eb_meldungen = $eb_einmal['meldungen'];
         $eb_fehler = array_merge($eb_fehler, $eb_einmal['fehler']);
         $eb_testausgabe = $eb_einmal['test'];
+        eb_eingaben($eb_einmal['eingaben']);     // X-2
     }
 }
 
@@ -190,6 +334,7 @@ if ($eb_post && isset($_POST['vorlage_quellen'])) {
     // Positivliste: was nicht dasteht, wird abgewiesen, nicht geraten.
     if (!isset($eb_alle[$eb_vn])) {
         $eb_fehler[] = eb_t('VORLAGE.UNBEKANNT');
+        eb_bean('vorlage_quellen');     // X-2
     } else {
         $eb_v = $eb_alle[$eb_vn];
         /* Wohin die Vorlage schreibt. "ersatz" nimmt AUSSCHLIESSLICH den
@@ -199,22 +344,33 @@ if ($eb_post && isset($_POST['vorlage_quellen'])) {
         $eb_ziel = isset($_POST['vq_ziel']) ? (string) $_POST['vq_ziel'] : 'vorlage';
         if (!in_array($eb_ziel, array('vorlage', 'ersatz'), true)) {
             $eb_fehler[] = eb_t('VORLAGE.UNBEKANNT');
+            eb_bean('vq_ziel');     // X-2
             $eb_v['quellen'] = array();
             $eb_ziel = 'nichts';
         }
         if ($eb_ziel === 'ersatz') {
             if (!isset($eb_v['quellen']['q_netz'])) {
                 $eb_fehler[] = eb_t('VORLAGE.OHNE_NETZ');
+                eb_bean('vorlage_quellen');     // X-2
                 $eb_v['quellen'] = array();
                 $eb_ziel = 'nichts';
             } else {
                 $eb_v['quellen'] = array('q_netz2' => $eb_v['quellen']['q_netz']);
             }
         }
-        $eb_wert_v = isset($_POST['vq_wert'])
-            ? trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['vq_wert'])) : '';
-        if ($eb_v['quellen'] && $eb_wert_v === '') {
+        /* Anfuehrungs- und Steuerzeichen werden nicht mehr still entfernt
+         * (Entscheidung 19): bis 0.9.28 wurde aus der Angabe herausgeschnitten,
+         * was nicht passte, und die Vorlage mit dem Rest angewendet. Still
+         * bleibt nur der Leerraum am Rand. */
+        $eb_wert_roh = (isset($_POST['vq_wert']) && is_string($_POST['vq_wert']))
+            ? trim($_POST['vq_wert']) : '';
+        $eb_wert_v = preg_replace('/[\x00-\x1F\x7F"\']/', '', $eb_wert_roh);
+        if ($eb_wert_v !== $eb_wert_roh) {
+            $eb_fehler[] = eb_t('VORLAGE.ZEICHEN');
+            eb_bean('vq_wert');
+        } elseif ($eb_v['quellen'] && $eb_wert_v === '') {
             $eb_fehler[] = eb_t('VORLAGE.OHNE_ANGABE');
+            eb_bean('vq_wert');
         } else {
             $eb_cfg = eb_config();
             foreach ($eb_v['quellen'] as $eb_k => $eb_q) {
@@ -237,6 +393,9 @@ if ($eb_post && isset($_POST['vorlage_quellen'])) {
                 $eb_fehler[] = eb_t('FEHLER.SPEICHERN');
             }
         }
+    }
+    if (eb_bean()) {     // X-2: nur nach einer Beanstandung
+        $eb_eingaben_post = eb_eingaben_sammeln('vorlage');
     }
     $eb_tab = 'tab-settings';
 }
@@ -262,23 +421,35 @@ if ($eb_post && isset($_POST['speichern'])) {
         $a = isset($_POST[$name]) ? (array) $_POST[$name] : array();
         return isset($a[$i]) ? $eb_sauber($a[$i]) : '';
     };
-    /* Eine Zahl pruefen statt sie stillschweigend zurechtzubiegen. */
-    $eb_zahl_pruef = function ($roh, $von, $bis, $bez) use (&$eb_fehler) {
+    /* Eine Zahl pruefen statt sie stillschweigend zurechtzubiegen.
+     * Seit dem B-Nachzug (Entscheidungen 16 und 19) ist auch ein LEERES Feld
+     * eine Beanstandung. Bis 0.9.28 stand hier "leer -> null": bei den
+     * Regelgroessen blieb damit still der alte Wert stehen, bei Stellgliedern
+     * und Speicher still die Werksvorgabe - und der Rest wurde gespeichert.
+     * $feld ist der Formularname fuer die Markierung (X-2). */
+    $eb_zahl_pruef = function ($roh, $von, $bis, $bez, $feld = null) use (&$eb_fehler) {
         $roh = str_replace(',', '.', trim((string) $roh));
-        if ($roh === '') { return null; }
+        if ($roh === '') {
+            $eb_fehler[] = sprintf(eb_t('FEHLER.FELD_LEER'), $bez);
+            eb_bean($feld);
+            return null;
+        }
         if (!is_numeric($roh)) {
             $eb_fehler[] = sprintf(eb_t('FEHLER.KEINE_ZAHL'), $bez, $roh);
+            eb_bean($feld);
             return null;
         }
         /* Eine Kommazahl wird abgewiesen, nicht gerundet: bis 0.9.25 wurde
          * aus soc_max 100.4 still 100 und aus takt 7.4 still 7. */
         if ((float) $roh != floor((float) $roh)) {
             $eb_fehler[] = sprintf(eb_t('FEHLER.KEINE_GANZE_ZAHL'), $bez, $roh);
+            eb_bean($feld);
             return null;
         }
         $w = (int) $roh;
         if ($w < $von || $w > $bis) {
             $eb_fehler[] = sprintf(eb_t('FEHLER.AUSSERHALB'), $bez, $roh, $von, $bis);
+            eb_bean($feld);
             return null;
         }
         return $w;
@@ -312,21 +483,20 @@ if ($eb_post && isset($_POST['speichern'])) {
             $q['invertieren'] = !empty($_POST[$eb_k . '_inv']) ? 1 : 0;
             $f = str_replace(',', '.', $eb_wert($eb_k . '_faktor', '1'));
             if ($f === '') {
-                /* Leer heisst "alten Wert behalten", nicht "1". Bis 0.9.17
-                 * war die Meldung fuer genau diesen Fall ausdruecklich
-                 * ausgeschlossen ($f !== ''), und aus einem geleerten Feld
-                 * wurde still der Faktor 1 - bei einem Zaehler in kW ein
-                 * Messfehler um drei Groessenordnungen, gemeldet als
-                 * "gespeichert". */
-                $alt_f = isset($eb_cfg[$eb_k]['faktor'])
+                /* Leer ist eine Beanstandung (Entscheidungen 16 und 19). Bis
+                 * 0.9.17 wurde aus einem geleerten Feld still der Faktor 1 -
+                 * bei einem Zaehler in kW ein Messfehler um drei
+                 * Groessenordnungen -, bis 0.9.28 blieb still der alte Wert
+                 * stehen. Beide Male wurde der Rest gespeichert. */
+                $eb_fehler[] = sprintf(eb_t('FEHLER.FELD_LEER'),
+                    eb_t($eb_bez) . ' / ' . eb_t('QUELLE.L_FAKTOR'));
+                eb_bean($eb_k . '_faktor');
+                $q['faktor'] = isset($eb_cfg[$eb_k]['faktor'])
                     ? (float) $eb_cfg[$eb_k]['faktor'] : 1.0;
-                $q['faktor'] = ($alt_f == 0.0) ? 1.0 : $alt_f;
-                $eb_meldungen[] = sprintf(eb_t('EINST.FELD_LEER_BEHALTEN'),
-                    eb_t($eb_bez) . ' / ' . eb_t('QUELLE.L_FAKTOR'),
-                    rtrim(rtrim(sprintf('%.6F', $q['faktor']), '0'), '.'));
             } elseif (!is_numeric($f)) {
                 $eb_fehler[] = sprintf(eb_t('FEHLER.KEINE_ZAHL'),
                     eb_t($eb_bez) . ' / ' . eb_t('QUELLE.L_FAKTOR'), $f);
+                eb_bean($eb_k . '_faktor');
                 $q['faktor'] = isset($eb_cfg[$eb_k]['faktor'])
                     ? (float) $eb_cfg[$eb_k]['faktor'] : 1.0;
             } else {
@@ -334,10 +504,12 @@ if ($eb_post && isset($_POST['speichern'])) {
             }
             if (!isset($eb_qarten[$q['art']])) {
                 $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), eb_t($eb_bez), $q['art']);
+                eb_bean($eb_k . '_art');     // X-2
                 $q['art'] = 'aus';
             }
             if ($q['art'] !== 'aus' && $q['adresse'] === '') {
                 $eb_fehler[] = sprintf(eb_t('FEHLER.QUELLE_OHNE_ADRESSE'), eb_t($eb_bez));
+                eb_bean($eb_k . '_adresse');     // X-2
             }
             $eb_cfg[$eb_k] = $q;
         }
@@ -357,35 +529,44 @@ if ($eb_post && isset($_POST['speichern'])) {
             $bez = eb_t('STELL.STELLER') . ' ' . ($eb_i + 1);
             if (!isset($eb_sarten[$s['art']])) {
                 $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), $bez, $s['art']);
+                eb_bean('s_art[' . $eb_i . ']');     // X-2
                 $s['art'] = 'aus';
             }
             if (!isset($eb_einh[$s['einheit']])) {
                 $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), $bez, $s['einheit']);
+                eb_bean('s_einheit[' . $eb_i . ']');     // X-2
                 $s['einheit'] = 'W';
             }
             foreach (array('spitze_w' => array('s_spitze', 0, 1000000),
                            'anteil' => array('s_anteil', 0, 100),
                            'auffrisch_s' => array('s_auffrisch', 0, 86400)) as $eb_f => $eb_d) {
                 $w = $eb_zahl_pruef($eb_reihe($eb_d[0], $eb_i), $eb_d[1], $eb_d[2],
-                                    $bez . ' / ' . eb_t('STELL.L_' . strtoupper($eb_f)));
+                                    $bez . ' / ' . eb_t('STELL.L_' . strtoupper($eb_f)),
+                                    $eb_d[0] . '[' . $eb_i . ']');
                 if ($w !== null) { $s[$eb_f] = $w; }
             }
             if ($s['name'] !== '' && $s['art'] !== 'aus') {
                 if ($s['adresse'] === '') {
                     $eb_fehler[] = sprintf(eb_t('FEHLER.STELLER_OHNE_ADRESSE'), $eb_i + 1);
+                    eb_bean('s_adresse[' . $eb_i . ']');     // X-2
                 } elseif ($s['art'] === 'sunspec') {
                     /* Kein Platzhalter noetig: der SunSpec-Weg rechnet die
                      * Prozentzahl selbst aus Grenze und Nennleistung. */
                     if (eb_sunspec_zerlegen($s['adresse']) === null) {
                         $eb_fehler[] = sprintf(eb_t('FEHLER.SUNSPEC_FORM'), $eb_i + 1);
+                        eb_bean('s_adresse[' . $eb_i . ']');     // X-2
                     }
                 } elseif (strpos($s['adresse'] . $s['inhalt'], '{') === false) {
                     $eb_fehler[] = sprintf(eb_t('FEHLER.OHNE_PLATZHALTER'), $eb_i + 1);
+                    eb_bean('s_adresse[' . $eb_i . ']');     // X-2
+                    eb_bean('s_inhalt[' . $eb_i . ']');
                 }
                 if ($s['art'] === 'sunspec' && (int) $s['spitze_w'] <= 0) {
                     $eb_fehler[] = sprintf(eb_t('FEHLER.SUNSPEC_OHNE_SPITZE'), $eb_i + 1);
+                    eb_bean('s_spitze[' . $eb_i . ']');     // X-2
                 } elseif ($s['einheit'] === 'Prozent' && (int) $s['spitze_w'] <= 0) {
                     $eb_fehler[] = sprintf(eb_t('FEHLER.PROZENT_OHNE_SPITZE'), $eb_i + 1);
+                    eb_bean('s_spitze[' . $eb_i . ']');     // X-2
                 }
             }
             $eb_neu_st[$eb_i] = $s;
@@ -402,25 +583,32 @@ if ($eb_post && isset($_POST['speichern'])) {
     $sp['stilllegen'] = !empty($_POST['sp_still']) ? 1 : 0;
     if (!isset($eb_sarten[$sp['art']])) {
         $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), eb_t('STELL.SPEICHER'), $sp['art']);
+        eb_bean('sp_art');     // X-2
         $sp['art'] = 'aus';
     }
     if (!isset($eb_einh[$sp['einheit']])) {
         $eb_fehler[] = sprintf(eb_t('FEHLER.AUSWAHL'), eb_t('STELL.SPEICHER'), $sp['einheit']);
+        eb_bean('sp_einheit');     // X-2
         $sp['einheit'] = 'W';
     }
     $w = $eb_zahl_pruef($eb_wert('sp_spitze'), 0, 1000000,
-                        eb_t('STELL.SPEICHER') . ' / ' . eb_t('STELL.L_SPITZE_W'));
+                        eb_t('STELL.SPEICHER') . ' / ' . eb_t('STELL.L_SPITZE_W'), 'sp_spitze');
     if ($w !== null) { $sp['spitze_w'] = $w; }
     if ($sp['art'] !== 'aus') {
         if ($sp['adresse'] === '') {
             $eb_fehler[] = eb_t('MANGEL.SPEICHER_OHNE_ADRESSE');
+            eb_bean('sp_adresse');     // X-2
         } elseif ($sp['art'] === 'sunspec') {
             $eb_fehler[] = eb_t('MANGEL.SPEICHER_SUNSPEC');
+            eb_bean('sp_art');     // X-2
         } elseif (strpos($sp['adresse'] . $sp['inhalt'], '{') === false) {
             $eb_fehler[] = eb_t('MANGEL.SPEICHER_OHNE_PLATZHALTER');
+            eb_bean('sp_adresse');     // X-2
+            eb_bean('sp_inhalt');
         }
         if ($sp['einheit'] === 'Prozent' && (int) $sp['spitze_w'] <= 0) {
             $eb_fehler[] = eb_t('MANGEL.SPEICHER_PROZENT_OHNE_SPITZE');
+            eb_bean('sp_spitze');     // X-2
         }
     }
     $eb_cfg['sp_steller'] = $sp;
@@ -436,7 +624,7 @@ if ($eb_post && isset($_POST['speichern'])) {
             'quelle_alter_s' => array(10, 86400),
             'ziel1_w' => array(0, 1000000), 'ziel2_w' => array(0, 1000000),
         ) as $eb_f => $eb_gr) {
-            $w = $eb_zahl_pruef($eb_wert($eb_f), $eb_gr[0], $eb_gr[1], eb_t('EINST.L_' . strtoupper($eb_f)));
+            $w = $eb_zahl_pruef($eb_wert($eb_f), $eb_gr[0], $eb_gr[1], eb_t('EINST.L_' . strtoupper($eb_f)), $eb_f);
             if ($w !== null) { $eb_cfg[$eb_f] = $w; }
         }
         $eb_cfg['speicher_zuerst'] = !empty($_POST['speicher_zuerst']) ? 1 : 0;
@@ -453,11 +641,15 @@ if ($eb_post && isset($_POST['speichern'])) {
          * laesst ein eingetragenes Abo ins Leere zeigen. */
         $eb_thema = trim($eb_wert('mqtt_topic'), '/');
         if ($eb_thema === '') {
-            $eb_meldungen[] = sprintf(eb_t('EINST.FELD_LEER_BEHALTEN'),
-                eb_t('MQTT.THEMA'), $eb_cfg['mqtt_topic']);
+            /* Leer ist eine Beanstandung (Entscheidungen 16 und 19); bis
+             * 0.9.28 blieb still das alte Thema stehen, und der Haken
+             * daneben wurde gespeichert. */
+            $eb_fehler[] = sprintf(eb_t('FEHLER.FELD_LEER'), eb_t('MQTT.THEMA'));
+            eb_bean('mqtt_topic');
         } elseif (!preg_match('#^[a-zA-Z0-9_\-/]+$#', $eb_thema)) {
             // Ein Thema mit + oder # ist ein Filtermuster und als Ziel unbrauchbar.
             $eb_fehler[] = sprintf(eb_t('FEHLER.THEMA'), $eb_thema);
+            eb_bean('mqtt_topic');     // X-2
         } elseif ($eb_thema !== strtolower($eb_thema) && $eb_thema !== (string) $eb_cfg['mqtt_topic']) {
             /* Nur ein NEUES Thema mit Grossbuchstaben wird angehalten. Bis
              * 0.9.25 auch das schon gespeicherte - dann liess sich der Reiter
@@ -467,6 +659,7 @@ if ($eb_post && isset($_POST['speichern'])) {
              * Also melden und den Anwender entscheiden lassen. */
             $eb_fehler[] = sprintf(eb_t('FEHLER.THEMA_GROSS'), $eb_thema,
                                    strtolower($eb_thema));
+            eb_bean('mqtt_topic');     // X-2
         } else {
             $eb_cfg['mqtt_topic'] = $eb_thema;
         }
@@ -491,6 +684,10 @@ if ($eb_post && isset($_POST['speichern'])) {
         } else {
             $eb_fehler[] = eb_t('FEHLER.SPEICHERN');
         }
+    } elseif (in_array($eb_formular, array('einstellungen', 'mqtt'), true)) {
+        /* X-2: Beanstandet - nichts gespeichert (Entscheidung 16), die
+         * eingetippten Werte reisen mit der Einmalmeldung zurueck. */
+        $eb_eingaben_post = eb_eingaben_sammeln($eb_formular);
     }
 }
 
@@ -618,11 +815,13 @@ if ($eb_post && isset($_POST['eb_zurueck'])) {
  * wuerfelte nach "Neues Wortzeichen" das Aktionstoken ein zweites Mal -
  * gemessen ueber php -S, 28.09.2026 - und jede in Loxone eingetragene
  * Adresse bekam danach 403.
- * Einzige Ausnahme, bewusst: ein ABGEWIESENES Speichern rendert direkt.
- * Es hat nichts geschrieben, ein Neuladen wiederholt nur die Abweisung,
- * und die eingetippten Werte bleiben zum Berichtigen stehen. */
-if ($eb_post && !(isset($_POST['speichern']) && $eb_fehler)) {
-    eb_einmal_schreiben($eb_meldungen, $eb_fehler, $eb_testausgabe);
+ * Bis 0.9.28 gab es eine Ausnahme: ein ABGEWIESENES Speichern renderte
+ * direkt, "damit die eingetippten Werte stehen bleiben". Sie blieben nicht
+ * stehen - die Seite las die Konfiguration vor dem Rendern neu und zeigte
+ * in jedem Feld den gespeicherten Wert (gemessen 01.10.2026). Seit X-2
+ * reisen die Eingaben mit der Einmalmeldung, und auch dieser POST leitet um. */
+if ($eb_post) {
+    eb_einmal_schreiben($eb_meldungen, $eb_fehler, $eb_testausgabe, $eb_eingaben_post);
     header('Location: index.php?form=' . rawurlencode(substr($eb_tab, 4)), true, 303);
     exit;
 }
@@ -745,6 +944,10 @@ if ($eb_rahmen) {
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* X-2 (B-Nachzug): ein beanstandetes Feld nach der Umleitung - eigene Zutat,
+   nicht Teil der Hausvorlage. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
+.sm-wrap input[type=checkbox].sm-beanstandet { outline: 2px solid #c62828; outline-offset: 2px; }
 
 </style>
 
@@ -763,7 +966,8 @@ if ($eb_rahmen) {
 <div class="sm-hinweis"><?= implode('<br>', array_map('eb_meldung_e', $eb_meldungen)) ?></div>
 <?php } ?>
 <?php if ($eb_fehler) { ?>
-<div class="sm-warnung"><b><?= eb_e(eb_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('eb_meldung_e', $eb_fehler)) ?></div>
+<div class="sm-warnung"><b><?= eb_e(eb_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('eb_meldung_e', $eb_fehler)) ?><?php
+    if (eb_eingaben() !== null) { ?><br><i><?= eb_e(eb_t('ALLG.EINGABEN_ZURUECK')) ?></i><?php } ?></div>
 <?php } ?>
 
 <div class="sm-kacheln">
@@ -872,17 +1076,17 @@ foreach ($eb_mangel as $eb_m) { ?><li><b><?= eb_e(eb_t(in_array($eb_m, $eb_sperr
 <div class="sm-breit">
 <table class="sm-tbl"><tr>
   <td><label for="eb_vq"><?= eb_e(eb_t('VORLAGE.H')) ?><br>
-    <select data-role="none" id="eb_vq" name="vorlage_quellen">
+    <select data-role="none" id="eb_vq" name="vorlage_quellen"<?= eb_m('vorlage_quellen') ?>>
 <?php foreach (eb_quellvorlagen() as $eb_vk => $eb_vv) { ?>
-      <option value="<?= eb_e($eb_vk) ?>"
+      <option value="<?= eb_e($eb_vk) ?>"<?= eb_w('vorlage_quellen', '') === (string) $eb_vk ? ' selected' : '' ?>
               data-feld="<?= eb_e(eb_t($eb_vv['feld'])) ?>"
               data-vorgabe="<?= eb_e((string) $eb_vv['vorgabe']) ?>"><?= eb_e(eb_t($eb_vv['bez'])) ?></option>
 <?php } ?>
     </select></label></td>
   <td><label for="eb_vqz"><?= eb_e(eb_t('VORLAGE.ZIEL')) ?><br>
-    <select data-role="none" id="eb_vqz" name="vq_ziel">
+    <select data-role="none" id="eb_vqz" name="vq_ziel"<?= eb_m('vq_ziel') ?>>
       <option value="vorlage"><?= eb_e(eb_t('VORLAGE.Z_VORLAGE')) ?></option>
-      <option value="ersatz"><?= eb_e(eb_t('VORLAGE.Z_ERSATZ')) ?></option>
+      <option value="ersatz"<?= eb_w('vq_ziel', '') === 'ersatz' ? ' selected' : '' ?>><?= eb_e(eb_t('VORLAGE.Z_ERSATZ')) ?></option>
     </select></label></td>
   <td><label for="eb_vqw"><span id="eb_vqw_bez"><?php
     /* Die Beschriftung kommt aus der GEWAEHLTEN Vorlage, nicht aus einer
@@ -896,11 +1100,14 @@ foreach ($eb_mangel as $eb_m) { ?><li><b><?= eb_e(eb_t(in_array($eb_m, $eb_sperr
      * nennt zu JEDER Vorlage ihr Feld und ein Beispiel - die Seite bleibt
      * also vollstaendig bedienbar. */
     $eb_vq_erste = current(eb_quellvorlagen());
+    /* X-2: nach einer Beanstandung die Beschriftung der gewaehlten Vorlage. */
+    $eb_vq_alle = eb_quellvorlagen();
+    if (isset($eb_vq_alle[eb_w('vorlage_quellen', '')])) { $eb_vq_erste = $eb_vq_alle[eb_w('vorlage_quellen', '')]; }
     echo eb_e(eb_t($eb_vq_erste['feld']));
   ?></span><br>
-    <input data-role="none" type="text" size="28" id="eb_vqw" name="vq_wert"
+    <input data-role="none" type="text" size="28" id="eb_vqw" name="vq_wert"<?= eb_m('vq_wert') ?>
            placeholder="<?= eb_e((string) $eb_vq_erste['vorgabe']) ?>"
-           value="<?= eb_e(isset($_POST['vq_wert']) ? $_POST['vq_wert'] : '') ?>"></label></td>
+           value="<?= eb_e(eb_w('vq_wert', '')) ?>"></label></td>
 </tr></table>
 </div>
 <!-- Der Knopf in eine eigene Reihe: als vierte Spalte fiel er auf
@@ -948,18 +1155,23 @@ foreach ($eb_mangel as $eb_m) { ?><li><b><?= eb_e(eb_t(in_array($eb_m, $eb_sperr
     <th><?= eb_e(eb_t('QUELLE.L_FAKTOR')) ?></th><th><?= eb_e(eb_t('QUELLE.L_INV')) ?></th></tr>
 <?php foreach (eb_quellenfelder() as $eb_k => $eb_f) {
     $eb_bez = $eb_f['bez'];
-    $q = $eb_cfg[$eb_k]; ?>
+    $q = $eb_cfg[$eb_k];
+    /* X-2: nach einer Beanstandung die eingetippten Werte. */
+    foreach (array('art', 'adresse', 'pfad', 'faktor') as $eb_uf) {
+        $q[$eb_uf] = eb_w($eb_k . '_' . $eb_uf, $q[$eb_uf]);
+    }
+    $q['invertieren'] = eb_h($eb_k . '_inv', $q['invertieren']) ? 1 : 0; ?>
 <tr>
   <td><b><?= eb_e(eb_t($eb_bez)) ?></b></td>
-  <td><select data-role="none" name="<?= eb_e($eb_k) ?>_art">
+  <td><select data-role="none" name="<?= eb_e($eb_k) ?>_art"<?= eb_m($eb_k . '_art') ?>>
 <?php foreach (eb_quellarten() as $eb_a => $eb_as) { ?>
       <option value="<?= eb_e($eb_a) ?>"<?= $q['art'] === $eb_a ? ' selected' : '' ?>><?= eb_e(eb_t($eb_as)) ?></option>
 <?php } ?>
   </select></td>
-  <td><input data-role="none" type="text" size="30" name="<?= eb_e($eb_k) ?>_adresse" value="<?= eb_e($q['adresse']) ?>"></td>
-  <td><input data-role="none" type="text" size="14" name="<?= eb_e($eb_k) ?>_pfad" value="<?= eb_e($q['pfad']) ?>"></td>
-  <td><input data-role="none" type="text" size="6" name="<?= eb_e($eb_k) ?>_faktor" value="<?= eb_e($q['faktor']) ?>"></td>
-  <td><input data-role="none" type="checkbox" name="<?= eb_e($eb_k) ?>_inv" value="1"<?= $q['invertieren'] ? ' checked' : '' ?>></td>
+  <td><input data-role="none" type="text" size="30" name="<?= eb_e($eb_k) ?>_adresse"<?= eb_m($eb_k . '_adresse') ?> value="<?= eb_e($q['adresse']) ?>"></td>
+  <td><input data-role="none" type="text" size="14" name="<?= eb_e($eb_k) ?>_pfad"<?= eb_m($eb_k . '_pfad') ?> value="<?= eb_e($q['pfad']) ?>"></td>
+  <td><input data-role="none" type="text" size="6" name="<?= eb_e($eb_k) ?>_faktor"<?= eb_m($eb_k . '_faktor') ?> value="<?= eb_e($q['faktor']) ?>"></td>
+  <td><input data-role="none" type="checkbox" name="<?= eb_e($eb_k) ?>_inv"<?= eb_m($eb_k . '_inv') ?> value="1"<?= $q['invertieren'] ? ' checked' : '' ?>></td>
 </tr>
 <?php } ?>
 </table>
@@ -968,39 +1180,47 @@ foreach ($eb_mangel as $eb_m) { ?><li><b><?= eb_e(eb_t(in_array($eb_m, $eb_sperr
 
 <h2><?= eb_e(eb_t('EINST.H_STELLER')) ?></h2>
 <div class="sm-step"><?= eb_t('EINST.STELLER_ERKLAERUNG') ?></div>
-<?php for ($eb_i = 0; $eb_i < EB_STELLER; $eb_i++) { $s = $eb_cfg['steller'][$eb_i]; ?>
-<h3><?= eb_e(eb_t('STELL.STELLER')) ?> <?= $eb_i + 1 ?><?= $s['name'] !== '' ? ': ' . eb_e($s['name']) : '' ?></h3>
+<?php for ($eb_i = 0; $eb_i < EB_STELLER; $eb_i++) { $s = $eb_cfg['steller'][$eb_i];
+    $eb_s_name = $s['name'];     // die Ueberschrift nennt den GESPEICHERTEN Namen
+    /* X-2: nach einer Beanstandung die eingetippten Werte. */
+    foreach (array('name' => 's_name', 'art' => 's_art', 'einheit' => 's_einheit',
+                   'adresse' => 's_adresse', 'inhalt' => 's_inhalt', 'spitze_w' => 's_spitze',
+                   'anteil' => 's_anteil', 'auffrisch_s' => 's_auffrisch') as $eb_uf => $eb_fn) {
+        $s[$eb_uf] = eb_w($eb_fn, $s[$eb_uf], $eb_i);
+    }
+    $s['stilllegen'] = eb_h('s_still', $s['stilllegen'], $eb_i) ? 1 : 0; ?>
+<h3><?= eb_e(eb_t('STELL.STELLER')) ?> <?= $eb_i + 1 ?><?= $eb_s_name !== '' ? ': ' . eb_e($eb_s_name) : '' ?></h3>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr>
   <td><label><?= eb_e(eb_t('STELL.L_NAME')) ?><br>
-    <input data-role="none" type="text" size="16" name="s_name[<?= $eb_i ?>]" value="<?= eb_e($s['name']) ?>"></label></td>
+    <input data-role="none" type="text" size="16" name="s_name[<?= $eb_i ?>]"<?= eb_m('s_name', $eb_i) ?> value="<?= eb_e($s['name']) ?>"></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_ART')) ?><br>
-    <select data-role="none" name="s_art[<?= $eb_i ?>]">
+    <select data-role="none" name="s_art[<?= $eb_i ?>]"<?= eb_m('s_art', $eb_i) ?>>
 <?php foreach (eb_stellarten() as $eb_a => $eb_as) { ?>
       <option value="<?= eb_e($eb_a) ?>"<?= $s['art'] === $eb_a ? ' selected' : '' ?>><?= eb_e(eb_t($eb_as)) ?></option>
 <?php } ?>
     </select></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_EINHEIT')) ?><br>
-    <select data-role="none" name="s_einheit[<?= $eb_i ?>]">
+    <select data-role="none" name="s_einheit[<?= $eb_i ?>]"<?= eb_m('s_einheit', $eb_i) ?>>
 <?php foreach (eb_einheiten() as $eb_a => $eb_as) { ?>
       <option value="<?= eb_e($eb_a) ?>"<?= $s['einheit'] === $eb_a ? ' selected' : '' ?>><?= eb_e(eb_t($eb_as)) ?></option>
 <?php } ?>
     </select></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_SPITZE_W')) ?><br>
-    <input data-role="none" type="text" size="8" name="s_spitze[<?= $eb_i ?>]" value="<?= (int) $s['spitze_w'] ?>"></label></td>
+    <input data-role="none" type="text" size="8" name="s_spitze[<?= $eb_i ?>]"<?= eb_m('s_spitze', $eb_i) ?> value="<?= eb_e($s['spitze_w']) ?>"></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_ANTEIL')) ?><br>
-    <input data-role="none" type="text" size="5" name="s_anteil[<?= $eb_i ?>]" value="<?= (int) $s['anteil'] ?>"></label></td>
+    <input data-role="none" type="text" size="5" name="s_anteil[<?= $eb_i ?>]"<?= eb_m('s_anteil', $eb_i) ?> value="<?= eb_e($s['anteil']) ?>"></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_STILL')) ?><br>
-    <input data-role="none" type="checkbox" name="s_still[<?= $eb_i ?>]" value="1"<?= !empty($s['stilllegen']) ? ' checked' : '' ?>></label></td>
+    <input data-role="none" type="checkbox" name="s_still[<?= $eb_i ?>]"<?= eb_m('s_still', $eb_i) ?> value="1"<?= !empty($s['stilllegen']) ? ' checked' : '' ?>></label></td>
 </tr>
 <tr>
   <td colspan="3"><label><?= eb_e(eb_t('STELL.L_ADRESSE')) ?><br>
-    <input data-role="none" type="text" size="70" name="s_adresse[<?= $eb_i ?>]" value="<?= eb_e($s['adresse']) ?>"></label></td>
+    <input data-role="none" type="text" size="70" name="s_adresse[<?= $eb_i ?>]"<?= eb_m('s_adresse', $eb_i) ?> value="<?= eb_e($s['adresse']) ?>"></label></td>
   <td colspan="2"><label><?= eb_e(eb_t('STELL.L_INHALT')) ?><br>
-    <input data-role="none" type="text" size="34" name="s_inhalt[<?= $eb_i ?>]" value="<?= eb_e($s['inhalt']) ?>"></label></td>
+    <input data-role="none" type="text" size="34" name="s_inhalt[<?= $eb_i ?>]"<?= eb_m('s_inhalt', $eb_i) ?> value="<?= eb_e($s['inhalt']) ?>"></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_AUFFRISCH_S')) ?><br>
-    <input data-role="none" type="text" size="6" name="s_auffrisch[<?= $eb_i ?>]" value="<?= (int) $s['auffrisch_s'] ?>"></label></td>
+    <input data-role="none" type="text" size="6" name="s_auffrisch[<?= $eb_i ?>]"<?= eb_m('s_auffrisch', $eb_i) ?> value="<?= eb_e($s['auffrisch_s']) ?>"></label></td>
 </tr>
 </table>
 </div>
@@ -1012,34 +1232,40 @@ foreach ($eb_mangel as $eb_m) { ?><li><b><?= eb_e(eb_t(in_array($eb_m, $eb_sperr
 
 <h2><?= eb_e(eb_t('EINST.H_SPEICHER_STELLER')) ?></h2>
 <div class="sm-step"><?= eb_t('EINST.SPEICHER_STELLER_ERKLAERUNG') ?></div>
-<?php $eb_sp = $eb_cfg['sp_steller']; ?>
+<?php $eb_sp = $eb_cfg['sp_steller'];
+/* X-2: nach einer Beanstandung die eingetippten Werte. */
+foreach (array('name' => 'sp_name', 'art' => 'sp_art', 'einheit' => 'sp_einheit',
+               'adresse' => 'sp_adresse', 'inhalt' => 'sp_inhalt', 'spitze_w' => 'sp_spitze') as $eb_uf => $eb_fn) {
+    $eb_sp[$eb_uf] = eb_w($eb_fn, $eb_sp[$eb_uf]);
+}
+$eb_sp['stilllegen'] = eb_h('sp_still', $eb_sp['stilllegen']) ? 1 : 0; ?>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr>
   <td><label><?= eb_e(eb_t('STELL.L_NAME')) ?><br>
-    <input data-role="none" type="text" size="16" name="sp_name" value="<?= eb_e($eb_sp['name']) ?>"></label></td>
+    <input data-role="none" type="text" size="16" name="sp_name"<?= eb_m('sp_name') ?> value="<?= eb_e($eb_sp['name']) ?>"></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_ART')) ?><br>
-    <select data-role="none" name="sp_art">
+    <select data-role="none" name="sp_art"<?= eb_m('sp_art') ?>>
 <?php foreach (eb_stellarten() as $eb_a => $eb_as) { ?>
       <option value="<?= eb_e($eb_a) ?>"<?= $eb_sp['art'] === $eb_a ? ' selected' : '' ?>><?= eb_e(eb_t($eb_as)) ?></option>
 <?php } ?>
     </select></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_EINHEIT')) ?><br>
-    <select data-role="none" name="sp_einheit">
+    <select data-role="none" name="sp_einheit"<?= eb_m('sp_einheit') ?>>
 <?php foreach (eb_einheiten() as $eb_a => $eb_as) { ?>
       <option value="<?= eb_e($eb_a) ?>"<?= $eb_sp['einheit'] === $eb_a ? ' selected' : '' ?>><?= eb_e(eb_t($eb_as)) ?></option>
 <?php } ?>
     </select></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_SPITZE_W')) ?><br>
-    <input data-role="none" type="text" size="8" name="sp_spitze" value="<?= (int) $eb_sp['spitze_w'] ?>"></label></td>
+    <input data-role="none" type="text" size="8" name="sp_spitze"<?= eb_m('sp_spitze') ?> value="<?= eb_e($eb_sp['spitze_w']) ?>"></label></td>
   <td><label><?= eb_e(eb_t('STELL.L_STILL')) ?><br>
-    <input data-role="none" type="checkbox" name="sp_still" value="1"<?= !empty($eb_sp['stilllegen']) ? ' checked' : '' ?>></label></td>
+    <input data-role="none" type="checkbox" name="sp_still"<?= eb_m('sp_still') ?> value="1"<?= !empty($eb_sp['stilllegen']) ? ' checked' : '' ?>></label></td>
 </tr>
 <tr>
   <td colspan="3"><label><?= eb_e(eb_t('STELL.L_ADRESSE')) ?><br>
-    <input data-role="none" type="text" size="70" name="sp_adresse" value="<?= eb_e($eb_sp['adresse']) ?>"></label></td>
+    <input data-role="none" type="text" size="70" name="sp_adresse"<?= eb_m('sp_adresse') ?> value="<?= eb_e($eb_sp['adresse']) ?>"></label></td>
   <td colspan="2"><label><?= eb_e(eb_t('STELL.L_INHALT')) ?><br>
-    <input data-role="none" type="text" size="34" name="sp_inhalt" value="<?= eb_e($eb_sp['inhalt']) ?>"></label></td>
+    <input data-role="none" type="text" size="34" name="sp_inhalt"<?= eb_m('sp_inhalt') ?> value="<?= eb_e($eb_sp['inhalt']) ?>"></label></td>
 </tr>
 </table>
 </div>
@@ -1059,19 +1285,19 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 <tr>
 <?php foreach ($eb_zeile as $eb_f) { ?>
   <td><label for="eb_<?= eb_e($eb_f) ?>"><?= eb_e(eb_t('EINST.L_' . strtoupper($eb_f))) ?><br>
-    <input data-role="none" type="text" size="9" id="eb_<?= eb_e($eb_f) ?>" name="<?= eb_e($eb_f) ?>" value="<?= (int) $eb_cfg[$eb_f] ?>"></label></td>
+    <input data-role="none" type="text" size="9" id="eb_<?= eb_e($eb_f) ?>" name="<?= eb_e($eb_f) ?>"<?= eb_m($eb_f) ?> value="<?= eb_e(eb_w($eb_f, (int) $eb_cfg[$eb_f])) ?>"></label></td>
 <?php } ?>
 </tr>
 <?php } ?>
 </table>
 </div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="speicher_zuerst" value="1"<?= !empty($eb_cfg['speicher_zuerst']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_SPEICHER_ZUERST')) ?></label>
+  <label><input data-role="none" type="checkbox" name="speicher_zuerst" value="1"<?= eb_h('speicher_zuerst', $eb_cfg['speicher_zuerst']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_SPEICHER_ZUERST')) ?></label>
   <p class="sm-hilfe"><?= eb_t('EINST.H_SPEICHER_ZUERST') ?></p>
 </div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="bilanz_ein" value="1"<?= !empty($eb_cfg['bilanz_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_BILANZ_EIN')) ?></label>
-  <label><input data-role="none" type="checkbox" name="verlauf_ein" value="1"<?= !empty($eb_cfg['verlauf_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_VERLAUF_EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="bilanz_ein" value="1"<?= eb_h('bilanz_ein', $eb_cfg['bilanz_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_BILANZ_EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="verlauf_ein" value="1"<?= eb_h('verlauf_ein', $eb_cfg['verlauf_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_VERLAUF_EIN')) ?></label>
 </div>
 <h3><?= eb_e(eb_t('EINST.H_STUFEN')) ?></h3>
 <div class="sm-step"><?= sprintf(eb_t('EINST.STUFEN_ERKLAERUNG'),
@@ -1086,6 +1312,12 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 <h2><?= eb_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= eb_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= eb_t('EINST.SICH_WARNUNG') ?></div>
+<?php /* X-3 (B-Nachzug): Wuerde das Zurueckspielen die eigene Sicherung abweisen,
+         steht es hier - gelb, nur Namen. Die Sicherung wird trotzdem geliefert. */
+$eb_sich_warn = eb_rueckspiel_altwerte($eb_cfg);
+if ($eb_sich_warn) { ?>
+<div class="sm-warnung"><?= eb_e(sprintf(eb_klartext('EINST.SICH_WARN_KNOPF'), implode(', ', $eb_sich_warn))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1122,11 +1354,11 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <input data-role="none" type="hidden" name="formular" value="mqtt">
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $eb_cfg['mqtt_ein'] ? ' checked' : '' ?>> <?= eb_e(eb_t('MQTT.EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= eb_h('mqtt_ein', $eb_cfg['mqtt_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('MQTT.EIN')) ?></label>
 </div>
 <div class="sm-feld">
   <label for="eb_thema"><?= eb_e(eb_t('MQTT.THEMA')) ?></label>
-  <input data-role="none" type="text" id="eb_thema" name="mqtt_topic" value="<?= eb_e($eb_cfg['mqtt_topic']) ?>">
+  <input data-role="none" type="text" id="eb_thema" name="mqtt_topic"<?= eb_m('mqtt_topic') ?> value="<?= eb_e(eb_w('mqtt_topic', $eb_cfg['mqtt_topic'])) ?>">
   <p class="sm-hilfe"><?= eb_t('MQTT.THEMA_HILFE') ?></p>
 </div>
 <div class="sm-legende">
