@@ -567,6 +567,21 @@ function eb_selbstpruefung()
                   : ($anlage > 0 ? sprintf(eb_klartext('SP.ANLAGE_MAX_W'), $anlage)
                                  : eb_klartext('SP.ANLAGE_MAX_FEHLT')));
 
+    /* Energie-1 (offener Rest): mit steller_von_ein traegt jedes HTTP-Stellglied,
+     * das einen LoxBerry-Plugin-Endpunkt anspricht, &von=einspeisebremse - gebaut
+     * mit derselben eb_befehl_bauen() wie im Dienst. Nur, wenn eingeschaltet;
+     * ohne ein solches Stellglied ein Hinweis (die Einstellung wirkt dann nicht). */
+    if (!empty($cfg['steller_von_ein']) && $steller) {
+        $eb_mit = array();
+        foreach ($steller as $eb_s) {
+            list($eb_adr) = eb_befehl_bauen($eb_s, 0);
+            if (preg_match('#[?&]von=einspeisebremse(&|\#|$)#', $eb_adr) === 1) { $eb_mit[] = $eb_s['name']; }
+        }
+        $z[] = eb_pruefzeile(eb_klartext('SP.STELLER_VON'), $eb_mit ? 1 : -1,
+            $eb_mit ? sprintf(eb_klartext('SP.STELLER_VON_JA'), count($eb_mit), count($steller), implode(', ', $eb_mit))
+                    : eb_klartext('SP.STELLER_VON_KEINE'));
+    }
+
     /* Der Speicherzweig wird nur beurteilt, wenn er ueberhaupt gewaehlt ist -
      * sonst waere die Zeile eine Beschwichtigung. */
     if (!empty($cfg['speicher_zuerst']) && empty($cfg['speicher_extern'])) {

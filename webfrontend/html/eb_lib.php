@@ -235,6 +235,13 @@ function eb_vorgaben()
         /* Energie-1 C4: haus/energie/netz_w und haus/energie/ts senden -
          * nie retained (Messwert und Zeitstempel, Entscheidung 25). Ab Werk aus. */
         'haus_netz_ein'   => 0,
+        /* Energie-1 (offener Rest): die Kennung von=einspeisebremse auch an die
+         * Wechselrichter-Stellglieder haengen, deren Adresse der Endpunkt eines
+         * LoxBerry-Plugins ist (Schreiber-Wache dort; der Speicherweg traegt sie
+         * seit 0.9.29 immer). Ab Werk aus: bis hierher gingen diese Adressen
+         * unveraendert hinaus, und ob ein Plugin einen Parameter, den es nicht
+         * kennt, uebergeht, weiss die Bremse nicht. */
+        'steller_von_ein' => 0,
         /* Die Grenze, die beim AUSSCHALTEN der Regelung einmal gestellt
          * wird. Hoch angesetzt, weil "aus" heissen soll: die Anlage darf
          * wieder alles. Eine 0 waere hier die gefaehrlichste Vorgabe von
@@ -491,6 +498,7 @@ function eb_config($erzeugen = true)
     $cfg['speicher_zuerst'] = empty($cfg['speicher_zuerst']) ? 0 : 1;
     $cfg['speicher_extern'] = empty($cfg['speicher_extern']) ? 0 : 1;
     $cfg['haus_netz_ein'] = empty($cfg['haus_netz_ein']) ? 0 : 1;
+    $cfg['steller_von_ein'] = empty($cfg['steller_von_ein']) ? 0 : 1;
     $cfg['mqtt_ein'] = empty($cfg['mqtt_ein']) ? 0 : 1;
     $cfg['bilanz_ein'] = empty($cfg['bilanz_ein']) ? 0 : 1;
     $cfg['verlauf_ein'] = empty($cfg['verlauf_ein']) ? 0 : 1;
@@ -930,12 +938,20 @@ function eb_verlauf_svg($breite = 940, $hoehe = 200)
 function eb_steller()
 {
     $out = array();
-    foreach (eb_config()['steller'] as $i => $s) {
+    $eb_c = eb_config();
+    /* Energie-1 (offener Rest, Einstellung steller_von_ein, ab Werk aus): wer
+     * ein Stellglied ueber den Endpunkt eines LoxBerry-Plugins anspricht, sagt,
+     * wer er ist - wie der Speicherweg (eb_speicher_steller). eb_befehl_bauen()
+     * haengt es nur bei HTTP und nur an eine Plugin-Adresse an. Aus: der
+     * Eintrag bleibt genau wie bisher (kein Schluessel 'von'). */
+    $eb_von = !empty($eb_c['steller_von_ein']);
+    foreach ($eb_c['steller'] as $i => $s) {
         if (trim((string) $s['name']) === '' || $s['art'] === 'aus') { continue; }
         // Stillgelegt heisst: bleibt eingetragen, bekommt aber nichts mehr.
         if (!empty($s['stilllegen'])) { continue; }
         $nr = (int) $i + 1;
         $s['nr'] = $nr;
+        if ($eb_von) { $s['von'] = 'einspeisebremse'; }
         $out[$nr] = $s;
     }
     return $out;
@@ -1018,8 +1034,9 @@ function eb_befehl_bauen($steller, $watt)
         ? (string) (int) round(max(0.0, min(100.0, $w / $spitze * 100.0)))
         : '';
     $adresse = strtr((string) $steller['adresse'], $ersetzung);
-    /* &von= nur am Speicherweg (eb_speicher_steller setzt 'von'), nur bei
-     * HTTP und nur an der Adresse eines LoxBerry-Plugins - siehe
+    /* &von= am Speicherweg immer (eb_speicher_steller setzt 'von'), an den
+     * Wechselrichter-Stellgliedern nur mit steller_von_ein (eb_steller); nur
+     * bei HTTP und nur an der Adresse eines LoxBerry-Plugins - siehe
      * eb_von_anhaengen(). */
     if (!empty($steller['von']) && in_array($steller['art'], array('http_get', 'http_post'), true)) {
         $adresse = eb_von_anhaengen($adresse, (string) $steller['von']);
@@ -1032,7 +1049,9 @@ function eb_befehl_bauen($steller, $watt)
  * &von=<kennung> an die Adresse eines LoxBerry-Plugin-Endpunkts haengen.
  *
  * Nur an http(s)://<host>/plugins/<ordner>/... - dort liegen die Endpunkte
- * der Speicher-Linien (MarstekVenus marstek.php, BatterieBMS index.php). An
+ * der Speicher-Linien (MarstekVenus marstek.php, BatterieBMS index.php) und
+ * der Linien, die eine Wechselrichter- oder Ladegrenze annehmen (AnkerSolix,
+ * ZendureSolarFlow, EVCC - je index.php). An
  * die Adresse eines fremden Geraets wird nichts angehaengt: was ein
  * Wechselrichter oder Speicher mit einem unbekannten Parameter tut, weiss
  * hier niemand. Traegt die Adresse schon ein von=, bleibt sie, wie sie ist -
@@ -1591,7 +1610,138 @@ function eb_mqtt_themen()
 /** Die Schluessel, die mit Energie-1 hinzukamen: eine aeltere Sicherung darf sie nicht kennen. */
 function eb_sicherung_neue_schluessel()
 {
-    return array('speicher_extern', 'extern_wirkung_s', 'haus_netz_ein');
+    return array('speicher_extern', 'extern_wirkung_s', 'haus_netz_ein', 'steller_von_ein');
+}
+
+/* ================= Baustein-Listen (Reiter Einbindung in Loxone) ==========
+ *
+ * X-8 und Regel A4 (Regeln/04, "Die Baustein-Liste ist eine Tabelle mit festen
+ * Spalten"; Nachzug 02.10.2026, bestand_x/NACHZUG_0210.md). Bis 0.9.30 standen
+ * beide Listen als fertiges HTML in der Sprachdatei, und #8 war ein ODER mit
+ * fuenf Eingaengen. Jetzt entsteht die Tabelle hier; die Sprachdatei traegt nur
+ * die Texte je Zelle (Abschnitt [BAUSTEIN]).
+ *
+ * Eine Zeile ist array(Typ, Name, Parameter, Eingaenge), jede Zelle eine Liste
+ * von Teilen, die mit Leerzeichen verbunden werden:
+ *   array('t', 'BAUSTEIN.X')           Text aus der Sprachdatei (Auszeichnung roh)
+ *   array('ts', 'BAUSTEIN.X', a, ...)  derselbe mit sprintf; ein Argument, das selbst
+ *                                      ein Teil ist (Feld), wird vorher gebaut
+ *   array('m', 'text')                 nicht uebersetzbar, Festschrift (Formel, Befehl)
+ *   array('vi', 'FELD')                Titel des virtuellen Eingangs aus eb_felder() -
+ *                                      derselbe wie in der Vorlage - und die Kennung EB_FELD
+ *   array('nr', array(3, 4))           Verweis auf fruehere Zeilen: #3, #4
+ * Regel A4: ein ODER/UND hat hoechstens zwei Eingaenge mit je einer Quelle, und
+ * jede Zeile verweist nur auf kleinere Nummern. Die Proben pruefen das an der
+ * gerendert ausgelieferten Tabelle (vb_en2_bau_skripte/eb/proben/ui_en2.py).
+ */
+
+/** Ein Teil einer Zelle als HTML. */
+function eb_baustein_teil(array $t)
+{
+    switch ($t[0]) {
+        case 't':
+            return eb_t($t[1]);
+        case 'ts':
+            $arg = array();
+            foreach (array_slice($t, 2) as $a) { $arg[] = is_array($a) ? eb_baustein_teil($a) : $a; }
+            return vsprintf(eb_t($t[1]), $arg);
+        case 'm':
+            return '<span class="sm-mono">' . eb_e($t[1]) . '</span>';
+        case 'vi':
+            $f = eb_felder();
+            return '<span class="sm-mono">' . eb_e(eb_klartext($f[$t[1]][4])) . '</span> (EB_' . eb_e($t[1]) . ')';
+        case 'nr':
+            return '#' . implode(', #', array_map('intval', $t[1]));
+    }
+    return '';
+}
+
+/** Eine Baustein-Liste als Tabelle: feste Spalten, eine Zeile je Baustein. */
+function eb_baustein_tabelle(array $zeilen)
+{
+    $o = '<table class="sm-tbl"><tr>';
+    foreach (array('BAUSTEIN.K_NR', 'BAUSTEIN.K_TYP', 'BAUSTEIN.K_NAME', 'BAUSTEIN.K_PARAM', 'BAUSTEIN.K_EINGANG') as $k) {
+        $o .= '<th>' . eb_e(eb_klartext($k)) . '</th>';
+    }
+    $o .= '</tr>';
+    foreach ($zeilen as $nr => $z) {
+        $o .= '<tr><td>' . (int) $nr . '</td>';
+        foreach ($z as $zelle) {
+            $teile = array();
+            foreach ($zelle as $t) { $teile[] = eb_baustein_teil($t); }
+            $o .= '<td>' . implode(' ', $teile) . '</td>';
+        }
+        $o .= '</tr>';
+    }
+    return $o . '</table>';
+}
+
+/** Die Sammelstoerung (Schritt 6). #8..#11: vier ODER mit je zwei Eingaengen (Regel A4). */
+function eb_bausteine_stoerung()
+{
+    $leer = array(array('t', 'BAUSTEIN.LEER'));
+    return array(
+        1  => array(array(array('t', 'BAUSTEIN.T_MERKER')), array(array('t', 'BAUSTEIN.S01_NAME')), $leer,
+                    array(array('vi', 'EIN'))),
+        2  => array(array(array('t', 'BAUSTEIN.T_FORMEL')), array(array('t', 'BAUSTEIN.S02_NAME')),
+                    array(array('m', '-min(0;I1)')), array(array('vi', 'NETZ'))),
+        3  => array(array(array('t', 'BAUSTEIN.T_VERGLEICHER')), array(array('t', 'BAUSTEIN.S03_NAME')),
+                    array(array('t', 'BAUSTEIN.S03_PARAM')), array(array('nr', array(2)))),
+        4  => array(array(array('t', 'BAUSTEIN.T_MERKER')), array(array('t', 'BAUSTEIN.S04_NAME')), $leer,
+                    array(array('vi', 'NOTFALL'))),
+        5  => array(array(array('t', 'BAUSTEIN.T_VERGLEICHER')), array(array('t', 'BAUSTEIN.S05_NAME')),
+                    array(array('t', 'BAUSTEIN.S05_PARAM')), array(array('vi', 'WIRKUNG'))),
+        6  => array(array(array('t', 'BAUSTEIN.T_VERGLEICHER')), array(array('t', 'BAUSTEIN.S06_NAME')),
+                    array(array('t', 'BAUSTEIN.S06_PARAM')), array(array('vi', 'MESSALTER'))),
+        7  => array(array(array('t', 'BAUSTEIN.T_VERGLEICHER')), array(array('t', 'BAUSTEIN.S07_NAME')),
+                    array(array('t', 'BAUSTEIN.S07_PARAM')), array(array('vi', 'ALTER'))),
+        8  => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('t', 'BAUSTEIN.S08_NAME')), $leer,
+                    array(array('nr', array(3, 4)))),
+        9  => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('t', 'BAUSTEIN.S09_NAME')), $leer,
+                    array(array('nr', array(8, 5)))),
+        10 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('t', 'BAUSTEIN.S10_NAME')), $leer,
+                    array(array('nr', array(9, 6)))),
+        11 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('t', 'BAUSTEIN.S11_NAME')), $leer,
+                    array(array('nr', array(10, 7)))),
+        12 => array(array(array('t', 'BAUSTEIN.T_MELDUNG')), array(array('t', 'BAUSTEIN.S12_NAME')),
+                    array(array('t', 'BAUSTEIN.S12_PARAM')), array(array('ts', 'BAUSTEIN.S12_EIN', 11, 11))),
+        13 => array(array(array('t', 'BAUSTEIN.T_AUSGANG')), array(array('t', 'BAUSTEIN.S13_NAME')),
+                    array(array('t', 'BAUSTEIN.S13_PARAM')), array(array('t', 'BAUSTEIN.S13_EIN'))),
+        14 => array(array(array('t', 'BAUSTEIN.T_STATISTIK')), array(array('t', 'BAUSTEIN.S14_NAME')), $leer,
+                    array(array('vi', 'GESTELLT'))),
+    );
+}
+
+/** Die Erlaeuterungen zur Sammelstoerung - die Nummern aus derselben Liste. */
+function eb_bausteine_erl()
+{
+    return sprintf(eb_t('BAUSTEIN.ERL'), 3, 6, 7, 8, 11, 12);
+}
+
+/** Speicher extern gefuehrt (Energie-1 C5): was Loxone der Bremse liefern muss. */
+function eb_bausteine_extern()
+{
+    $leer = array(array('t', 'BAUSTEIN.LEER'));
+    return array(
+        1 => array(array(array('t', 'BAUSTEIN.T_FORMEL')), array(array('t', 'BAUSTEIN.X01_NAME')),
+                   array(array('m', 'MIN(2500;MAX(0;2500-I1))*(I2<97)')), array(array('t', 'BAUSTEIN.X01_EIN'))),
+        2 => array(array(array('t', 'BAUSTEIN.T_FORMEL')), array(array('t', 'BAUSTEIN.X02_NAME')),
+                   array(array('m', 'MAX(0;I3-MAX(0;I1))*(I2<I4)')), array(array('t', 'BAUSTEIN.X02_EIN'))),
+        3 => array(array(array('t', 'BAUSTEIN.T_FORMEL')), array(array('t', 'BAUSTEIN.X03_NAME')),
+                   array(array('m', 'I1+I2')), array(array('ts', 'BAUSTEIN.X03_EIN', array('nr', array(1, 2))))),
+        4 => array(array(array('t', 'BAUSTEIN.T_AUSGANG')), array(array('t', 'BAUSTEIN.X04_NAME')),
+                   array(array('ts', 'BAUSTEIN.X04_PARAM', 11884)), $leer),
+        5 => array(array(array('ts', 'BAUSTEIN.T_AUSGANG_BEFEHL', 4)), array(array('t', 'BAUSTEIN.X05_NAME')),
+                   array(array('ts', 'BAUSTEIN.X05_PARAM', array('m', 'publish haus/energie/aufnahme_w <v>'))),
+                   array(array('nr', array(3)))),
+        6 => array(array(array('t', 'BAUSTEIN.T_IMPULS')), array(array('t', 'BAUSTEIN.X06_NAME')),
+                   array(array('t', 'BAUSTEIN.X06_PARAM')), $leer),
+        7 => array(array(array('t', 'BAUSTEIN.T_ANALOGSPEICHER')), array(array('t', 'BAUSTEIN.X07_NAME')),
+                   array(array('t', 'BAUSTEIN.X07_PARAM')), array(array('ts', 'BAUSTEIN.X07_EIN', 6))),
+        8 => array(array(array('ts', 'BAUSTEIN.T_AUSGANG_BEFEHL', 4)), array(array('t', 'BAUSTEIN.X08_NAME')),
+                   array(array('ts', 'BAUSTEIN.X08_PARAM', array('m', 'publish haus/energie/aufnahme_ts <v>'))),
+                   array(array('nr', array(7)))),
+    );
 }
 
 /**
@@ -2107,7 +2257,7 @@ function eb_wert_pruefen($k, $w)
         return '';
     }
     if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
-                           'verlauf_ein', 'speicher_extern', 'haus_netz_ein'), true)) {
+                           'verlauf_ein', 'speicher_extern', 'haus_netz_ein', 'steller_von_ein'), true)) {
         return in_array($w, array(0, 1, '0', '1', true, false), true) ? '' : 'nur 0 oder 1';
     }
     if ($k === 'aktionstoken') {
@@ -2144,7 +2294,8 @@ function eb_wert_pruefen($k, $w)
         return is_array($w) ? eb_quelle_feld_pruefen($w) : 'kein Feld';
     }
     if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
-                           'verlauf_ein', 'speicher_extern', 'haus_netz_ein', 'mqtt_topic'), true)) {
+                           'verlauf_ein', 'speicher_extern', 'haus_netz_ein', 'steller_von_ein',
+                           'mqtt_topic'), true)) {
         return 'unbrauchbarer Wert';
     }
     return (is_scalar($w) || is_array($w)) ? '' : 'unbrauchbarer Wert';

@@ -84,7 +84,7 @@ function eb_eingabe_felder($formular)
             'ziel_w', 'totband_w', 'rampe_ab_w', 'rampe_auf_w', 'drossel_min_w', 'notfall_s',
             'notfall_w', 'frei_w', 'lade_max_w', 'soc_max', 'wirkung_s', 'takt', 'quelle_alter_s',
             'ziel1_w', 'ziel2_w', 'speicher_zuerst', 'bilanz_ein', 'verlauf_ein',
-            'speicher_extern', 'extern_wirkung_s'));
+            'speicher_extern', 'extern_wirkung_s', 'steller_von_ein'));
     }
     return array();
 }
@@ -632,6 +632,8 @@ if ($eb_post && isset($_POST['speichern'])) {
         $eb_cfg['speicher_zuerst'] = !empty($_POST['speicher_zuerst']) ? 1 : 0;
         $eb_cfg['bilanz_ein'] = !empty($_POST['bilanz_ein']) ? 1 : 0;
         $eb_cfg['verlauf_ein'] = !empty($_POST['verlauf_ein']) ? 1 : 0;
+        /* Energie-1 (offener Rest): von=einspeisebremse an Plugin-Stellglieder. */
+        $eb_cfg['steller_von_ein'] = !empty($_POST['steller_von_ein']) ? 1 : 0;
         /* Energie-1 C3: "Speicher extern gefuehrt" (ab Werk aus). Zusammen mit
          * einem eigenen, nicht stillgelegten Speicherweg waere die Bremse der
          * zweite Schreiber neben Loxone (Entwurf K4) - beanstandet, nichts
@@ -1244,6 +1246,10 @@ foreach ($eb_mangel as $eb_m) { ?><li><b><?= eb_e(eb_t(in_array($eb_m, $eb_sperr
 <p class="sm-hilfe"><?= eb_t('STELL.SUNSPEC_HILFE') ?></p>
 <p class="sm-hilfe"><?= eb_t('STELL.STILL_HILFE') ?></p>
 <p class="sm-hilfe"><?= eb_t('STELL.AUFFRISCH_HILFE') ?></p>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="steller_von_ein" value="1"<?= eb_m('steller_von_ein') ?><?= eb_h('steller_von_ein', $eb_cfg['steller_von_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('EINST.L_STELLER_VON')) ?></label>
+  <p class="sm-hilfe"><?= eb_t('EINST.H_STELLER_VON') ?></p>
+</div>
 
 <h2><?= eb_e(eb_t('EINST.H_SPEICHER_STELLER')) ?></h2>
 <div class="sm-step"><?= eb_t('EINST.SPEICHER_STELLER_ERKLAERUNG') ?></div>
@@ -1501,12 +1507,12 @@ list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
 </table>
 
 <h3><?= eb_e(eb_t('LOX.H_BAUSTEINE')) ?></h3>
-<?= eb_t('LOX.BAUSTEINE') ?>
-<p class="sm-hilfe"><?= eb_t('LOX.BAUSTEINE_ERL') ?></p>
+<?= eb_baustein_tabelle(eb_bausteine_stoerung()) /* X-8/A4: Tabelle aus dem Code, Texte aus [BAUSTEIN] */ ?>
+<p class="sm-hilfe"><?= eb_bausteine_erl() ?></p>
 
 <h3><?= eb_e(eb_t('LOX.H_EXTERN')) ?></h3>
 <div class="sm-step"><?= eb_t('LOX.EXTERN_ERKLAERUNG') ?></div>
-<?= eb_t('LOX.EXTERN_BAUSTEINE') ?>
+<?= eb_baustein_tabelle(eb_bausteine_extern()) ?>
 <p class="sm-hilfe"><?= eb_t('LOX.EXTERN_HINWEISE') ?></p>
 </div>
 

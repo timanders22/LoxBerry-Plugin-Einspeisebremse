@@ -3,9 +3,21 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.29 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.30 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.30
+
+Kennung an Plugin-Stellgliedern, Baustein-Liste nach A4 (Energie-1, Entscheidung 25).
+Gemessen mit Attrappen für Stellglieder, Broker und Gateway unter PHP 7.4 und 8.5; das Regelverhalten über 20 000 Fälle unverändert. Nicht am Gerät.
+
+* **Neue Einstellung „Kennung an Stellglieder anhängen, die ein LoxBerry-Plugin ansprechen“, ab Werk aus:** Eingeschaltet hängt die Einspeisebremse `&von=einspeisebremse` an HTTP-Stellglieder mit einer Plugin-Adresse. So erkennt etwa AnkerSolix oder Zendure, wer gerade schreibt. Geräte, MQTT, Modbus, SunSpec und Adressen mit eigenem `von=` bleiben unberührt. Ohne die Einstellung gehen die Adressen wortgleich wie bisher hinaus.
+* **Reiter Test:** Er nennt die Stellglieder, die die Kennung tragen.
+* **Baustein-Liste:** Die Sammelstörung läuft jetzt über eine Kette aus ODER mit je zwei Eingängen (#8 bis #11), die Benachrichtigung ist #12. Die Eingänge tragen den Titel aus der Vorlage.
+* Alte Sicherungen werden weiter angenommen.
+
+**In Loxone:** nichts zu tun; ein schon gebautes ODER mit mehr Eingängen wirkt gleich.
 
 ## Neu in 0.9.29
 
@@ -500,6 +512,17 @@ eines LoxBerry-Plugins an (`http://…/plugins/<ordner>/…`, etwa MarstekVenus)
 hängt die Bremse `&von=einspeisebremse` an. Die Schreiber-Wache dort
 unterscheidet sie so von Loxone und der aWATTar-Kopplung. An die Adresse eines
 fremden Geräts wird nichts angehängt.
+
+**Kennung an Wechselrichter-Stellgliedern** (Reiter *Einstellungen*, Haken unter
+den Stellgliedern, `steller_von_ein`, **ab Werk aus**). Eingeschaltet trägt auch
+jedes Stellglied der Art HTTP, dessen Adresse der Endpunkt eines LoxBerry-Plugins
+ist (etwa `einspeisegrenze` bei AnkerSolix, `grenzeaus` bei ZendureSolarFlow,
+`residualleistung` bei EVCC), `&von=einspeisebremse`. Die Schreiber-Wache des
+Plugins zeigt die Bremse dann mit Namen statt als „ohne Kennung“. Dieselben
+Grenzen wie am Speicherweg: nur HTTP, nur `http(s)://…/plugins/<ordner>/…`, eine
+Adresse mit eigenem `von=` bleibt unverändert; MQTT, Modbus und SunSpec bleiben
+unberührt. Ausgeschaltet gehen die Adressen genau wie bisher hinaus. Der Reiter
+*Test* nennt mit eingeschaltetem Haken die Stellglieder, die die Kennung tragen.
 
 **Erzeugung beim Hybrid: 40091 gegen `Site.P_PV`.** Register 40091 (Vorlage
 „Fronius Symo Hybrid, über Modbus TCP“) ist die AC-Ausgangsleistung
