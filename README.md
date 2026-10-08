@@ -3,9 +3,17 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.30 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.31 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.31
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Die Statuskacheln über den Reitern bleiben, wie sie sind.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.30
 

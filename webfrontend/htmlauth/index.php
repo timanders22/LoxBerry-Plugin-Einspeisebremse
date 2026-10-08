@@ -1036,8 +1036,10 @@ if ($eb_rahmen) {
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $eb_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= eb_t('EINST.WAS_IST_DAS') ?></div>
 
-<!-- EINE gesammelte Legende fuer den ganzen Reiter, ganz oben. Nicht je
+<!-- EINE gesammelte Legende fuer den ganzen Reiter, gleich unter der
+     Zusammenfassung (Kopf, Entscheidung Nr. 43). Nicht je
      Knopfreihe eine eigene: dieselbe Zeile mehrfach untereinander stiftet
      mehr Unruhe als Nutzen. -->
 <div class="sm-legende">
