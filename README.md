@@ -3,9 +3,21 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.31 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.32 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.32
+
+Baustein-Listen in der Schreibweise des Leitungswerkzeugs.
+
+* **Baustein-Listen (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Eingänge der vier ODER der Sammelstörung ausdrücklich (`I1 = #3, I2 = #4` statt „#3, #4“), die
+  Benachrichtigung `Ausgang der einzigen Quelle (#11)` statt „#11 — und nur #11“, und bei
+  „Speicher extern geführt“ die Formel #3 `I1 = #1, I2 = #2`; der Satz „jeder weitere Speicher,
+  den Loxone führt, wird dazugezählt“ steht jetzt in der Spalte Parameter hinter der Formel.
+  Gleiche Bausteine, gleiche Verbindungen.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.31
 
