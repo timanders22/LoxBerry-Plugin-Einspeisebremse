@@ -965,6 +965,10 @@ if ($eb_rahmen) {
    nicht Teil der Hausvorlage. */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 .sm-wrap input[type=checkbox].sm-beanstandet { outline: 2px solid #c62828; outline-offset: 2px; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 
 </style>
 
@@ -1511,6 +1515,11 @@ list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
 <h3><?= eb_e(eb_t('LOX.H_BAUSTEINE')) ?></h3>
 <?= eb_baustein_tabelle(eb_bausteine_stoerung()) /* X-8/A4: Tabelle aus dem Code, Texte aus [BAUSTEIN] */ ?>
 <p class="sm-hilfe"><?= eb_bausteine_erl() ?></p>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= eb_e(eb_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= eb_e(eb_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= eb_t('LOX.MUSTERPROJEKT') ?></p>
 
 <h3><?= eb_e(eb_t('LOX.H_EXTERN')) ?></h3>
 <div class="sm-step"><?= eb_t('LOX.EXTERN_ERKLAERUNG') ?></div>

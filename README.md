@@ -3,9 +3,15 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.32 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.33 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.33
+
+Die Baustein-Liste im Reiter „Einbindung in Loxone“ ist die aus dem
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) – mit einem Bild der Seite
+„Einspeisebremse“, eine Zeile je Baustein.
 
 ## Neu in 0.9.32
 

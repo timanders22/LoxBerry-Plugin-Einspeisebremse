@@ -1629,10 +1629,18 @@ function eb_sicherung_neue_schluessel()
  *   array('m', 'text')                 nicht uebersetzbar, Festschrift (Formel, Befehl)
  *   array('vi', 'FELD')                Titel des virtuellen Eingangs aus eb_felder() -
  *                                      derselbe wie in der Vorlage - und die Kennung EB_FELD
+ *   array('vn', 'FELD')                nur dieser Titel (Welle Bild 8: Name wie im Musterprojekt)
+ *   array('n', 'text')                 Bausteinname, in beiden Sprachen gleich (Musterprojekt)
  *   array('nr', array(3, 4))           Verweis auf fruehere Zeilen: #3, #4
  * Regel A4: ein ODER/UND hat hoechstens zwei Eingaenge mit je einer Quelle, und
  * jede Zeile verweist nur auf kleinere Nummern. Die Proben pruefen das an der
  * gerendert ausgelieferten Tabelle (vb_en2_bau_skripte/eb/proben/ui_en2.py).
+ *
+ * Welle Bild 8 (0.9.33, Entscheidung A): die Sammelstoerung ist die im LoxBerry-Plugins
+ * Musterprojekt in Loxone Config gebaute und mit leitungen_setzen.py verbundene Liste
+ * (Musterprojekt/baustein_listen.txt, Abschnitt Einspeisebremse) - eine Zeile = ein
+ * Baustein, nur die Hauptvariante, 15 Zeilen. Die Liste "Speicher extern gefuehrt" ist
+ * davon nicht beruehrt.
  */
 
 /** Ein Teil einer Zelle als HTML. */
@@ -1650,6 +1658,11 @@ function eb_baustein_teil(array $t)
         case 'vi':
             $f = eb_felder();
             return '<span class="sm-mono">' . eb_e(eb_klartext($f[$t[1]][4])) . '</span> (EB_' . eb_e($t[1]) . ')';
+        case 'vn':
+            $f = eb_felder();
+            return '<span class="sm-mono">' . eb_e(eb_klartext($f[$t[1]][4])) . '</span>';
+        case 'n':
+            return eb_e($t[1]);
         case 'nr':
             return '#' . implode(', #', array_map('intval', $t[1]));
     }
@@ -1676,46 +1689,51 @@ function eb_baustein_tabelle(array $zeilen)
     return $o . '</table>';
 }
 
-/** Die Sammelstoerung (Schritt 6). #8..#11: vier ODER mit je zwei Eingaengen (Regel A4). */
+/** Die Sammelstoerung (Schritt 6). Welle Bild 8 (0.9.33): die 15 Zeilen des Musterprojekts;
+ * jedes ODER hat zwei Eingaenge mit je einer Quelle (Regel A4). */
 function eb_bausteine_stoerung()
 {
     $leer = array(array('t', 'BAUSTEIN.LEER'));
+    /* #1..#5: Eingaenge der Vorlage - Typ mit dem Vorlagentitel, Name = Titel aus eb_felder()
+       wie in der Vorlage (Welle Bild 8, Musterprojekt). */
+    $vi = array(array('ts', 'BAUSTEIN.B_VIBEF', eb_e(eb_vorlage_titel())));
     return array(
-        1  => array(array(array('t', 'BAUSTEIN.T_MERKER')), array(array('t', 'BAUSTEIN.S01_NAME')), $leer,
-                    array(array('vi', 'EIN'))),
-        2  => array(array(array('t', 'BAUSTEIN.T_FORMEL')), array(array('t', 'BAUSTEIN.S02_NAME')),
-                    array(array('m', '-min(0;I1)')), array(array('vi', 'NETZ'))),
-        3  => array(array(array('t', 'BAUSTEIN.T_VERGLEICHER')), array(array('t', 'BAUSTEIN.S03_NAME')),
-                    array(array('t', 'BAUSTEIN.S03_PARAM')), array(array('nr', array(2)))),
-        4  => array(array(array('t', 'BAUSTEIN.T_MERKER')), array(array('t', 'BAUSTEIN.S04_NAME')), $leer,
-                    array(array('vi', 'NOTFALL'))),
-        5  => array(array(array('t', 'BAUSTEIN.T_VERGLEICHER')), array(array('t', 'BAUSTEIN.S05_NAME')),
-                    array(array('t', 'BAUSTEIN.S05_PARAM')), array(array('vi', 'WIRKUNG'))),
-        6  => array(array(array('t', 'BAUSTEIN.T_VERGLEICHER')), array(array('t', 'BAUSTEIN.S06_NAME')),
-                    array(array('t', 'BAUSTEIN.S06_PARAM')), array(array('vi', 'MESSALTER'))),
-        7  => array(array(array('t', 'BAUSTEIN.T_VERGLEICHER')), array(array('t', 'BAUSTEIN.S07_NAME')),
-                    array(array('t', 'BAUSTEIN.S07_PARAM')), array(array('vi', 'ALTER'))),
-        8  => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('t', 'BAUSTEIN.S08_NAME')), $leer,
-                    array(array('ts', 'BAUSTEIN.E_I1I2', 3, 4))),
-        9  => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('t', 'BAUSTEIN.S09_NAME')), $leer,
-                    array(array('ts', 'BAUSTEIN.E_I1I2', 8, 5))),
-        10 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('t', 'BAUSTEIN.S10_NAME')), $leer,
-                    array(array('ts', 'BAUSTEIN.E_I1I2', 9, 6))),
-        11 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('t', 'BAUSTEIN.S11_NAME')), $leer,
-                    array(array('ts', 'BAUSTEIN.E_I1I2', 10, 7))),
-        12 => array(array(array('t', 'BAUSTEIN.T_MELDUNG')), array(array('t', 'BAUSTEIN.S12_NAME')),
-                    array(array('t', 'BAUSTEIN.S12_PARAM')), array(array('ts', 'BAUSTEIN.S12_EIN', 11))),
-        13 => array(array(array('t', 'BAUSTEIN.T_AUSGANG')), array(array('t', 'BAUSTEIN.S13_NAME')),
-                    array(array('t', 'BAUSTEIN.S13_PARAM')), array(array('t', 'BAUSTEIN.S13_EIN'))),
-        14 => array(array(array('t', 'BAUSTEIN.T_STATISTIK')), array(array('t', 'BAUSTEIN.S14_NAME')), $leer,
-                    array(array('vi', 'GESTELLT'))),
+        1  => array($vi, array(array('vn', 'NETZ')), array(array('t', 'BAUSTEIN.B01_PARAM')), $leer),
+        2  => array($vi, array(array('vn', 'UEBERSCHUSS')), array(array('t', 'BAUSTEIN.B02_PARAM')), $leer),
+        3  => array($vi, array(array('vn', 'NOTFALL')), array(array('t', 'BAUSTEIN.B03_PARAM')), $leer),
+        4  => array($vi, array(array('vn', 'WIRKUNG')), array(array('t', 'BAUSTEIN.B04_PARAM')), $leer),
+        5  => array($vi, array(array('vn', 'ZAEHLER')), array(array('t', 'BAUSTEIN.B05_PARAM')), $leer),
+        6  => array(array(array('t', 'BAUSTEIN.T_KONSTANTE')), array(array('n', 'Konstante 1')),
+                    array(array('t', 'BAUSTEIN.B06_PARAM')), $leer),
+        7  => array(array(array('t', 'BAUSTEIN.T_STATUS')), array(array('n', 'Netz jetzt')),
+                    array(array('t', 'BAUSTEIN.B07_PARAM')), array(array('ts', 'BAUSTEIN.E_V1V2', 1, 2))),
+        8  => array(array(array('t', 'BAUSTEIN.T_SCHWELL')), array(array('n', 'Auflage verletzt')),
+                    array(array('t', 'BAUSTEIN.B08_PARAM')), array(array('ts', 'BAUSTEIN.E_EIN', 2))),
+        9  => array(array(array('t', 'BAUSTEIN.T_KLEINER')), array(array('n', 'Keine Wirkung')),
+                    array(array('t', 'BAUSTEIN.B09_PARAM')), array(array('ts', 'BAUSTEIN.E_V1', 4))),
+        10 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('n', 'Regelung gestört')), $leer,
+                    array(array('ts', 'BAUSTEIN.E_I1I2', 8, 9))),
+        11 => array(array(array('t', 'BAUSTEIN.T_EINVERZ')), array(array('n', 'Regelstörung hält an')),
+                    array(array('t', 'BAUSTEIN.B11_PARAM')), array(array('ts', 'BAUSTEIN.E_EIN', 10))),
+        12 => array(array(array('t', 'BAUSTEIN.T_VALID')), array(array('n', 'Dienst steht')),
+                    array(array('t', 'BAUSTEIN.B12_PARAM')), array(array('ts', 'BAUSTEIN.E_VEN', 5, 6))),
+        13 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('n', 'Dienst oder Messung gestört')), $leer,
+                    array(array('ts', 'BAUSTEIN.E_I1_I2E', 3, 12))),
+        14 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('n', 'Einspeisebremse gestört')), $leer,
+                    array(array('ts', 'BAUSTEIN.E_I1I2', 11, 13))),
+        15 => array(array(array('t', 'BAUSTEIN.T_BENACHR')), array(array('n', 'Meldung Einspeisebremse')),
+                    array(array('t', 'BAUSTEIN.B15_PARAM')), array(array('ts', 'BAUSTEIN.E_EIN', 14))),
     );
 }
 
-/** Die Erlaeuterungen zur Sammelstoerung - die Nummern aus derselben Liste. */
+/** Die Hinweise unter der Sammelstoerung (Welle Bild 8: ohne Nummern, Wortlaut der Vorschrift). */
 function eb_bausteine_erl()
 {
-    return sprintf(eb_t('BAUSTEIN.ERL'), 3, 6, 7, 8, 11, 12);
+    $s = array();
+    foreach (array('H_VALIDIERUNG', 'H_ODER', 'H_AUFLAGE', 'H_WIRKUNG', 'H_NOTBETRIEB') as $k) {
+        $s[] = eb_t('BAUSTEIN.' . $k);
+    }
+    return implode('<br>', $s);
 }
 
 /** Speicher extern gefuehrt (Energie-1 C5): was Loxone der Bremse liefern muss. */
@@ -2006,6 +2024,13 @@ function eb_check($feld)
     return '\i;' . $feld . '=\i\v';
 }
 
+/** Der Titel der Vorlage (Kopf des virtuellen HTTP-Eingangs). Welle Bild 8: auch die
+ * Baustein-Liste nennt ihn - aus derselben Quelle wie die Vorlage. */
+function eb_vorlage_titel()
+{
+    return 'Einspeisebremse';
+}
+
 function eb_vorlage()
 {
     $cmds = array();
@@ -2046,7 +2071,7 @@ function eb_vorlage()
     }
     $adresse = eb_endpunkt() . '?token=' . eb_token() . '&aktion=status';
     return array('VI_EINSPEISEBREMSE.xml', eb_xml_virtual_in_http(array(
-        'title'   => 'Einspeisebremse',
+        'title'   => eb_vorlage_titel(),
         'address' => $adresse,
         'polling' => '10',
         'comment' => sprintf(eb_klartext('EB_XML.KOPF'), date('d.m.Y')),
