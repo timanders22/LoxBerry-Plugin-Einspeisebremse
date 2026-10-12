@@ -1631,6 +1631,8 @@ function eb_sicherung_neue_schluessel()
  *                                      derselbe wie in der Vorlage - und die Kennung EB_FELD
  *   array('vn', 'FELD')                nur dieser Titel (Welle Bild 8: Name wie im Musterprojekt)
  *   array('n', 'text')                 Bausteinname, in beiden Sprachen gleich (Musterprojekt)
+ *   array('e', array('V1' => 16, ...)) Eingangsliste "V1 = #16, V2 = #21" (Welle Bild 10 VOLL;
+ *                                      Anschlussnamen wie in Config, in beiden Sprachen gleich)
  *   array('nr', array(3, 4))           Verweis auf fruehere Zeilen: #3, #4
  * Regel A4: ein ODER/UND hat hoechstens zwei Eingaenge mit je einer Quelle, und
  * jede Zeile verweist nur auf kleinere Nummern. Die Proben pruefen das an der
@@ -1641,6 +1643,13 @@ function eb_sicherung_neue_schluessel()
  * (Musterprojekt/baustein_listen.txt, Abschnitt Einspeisebremse) - eine Zeile = ein
  * Baustein, nur die Hauptvariante, 15 Zeilen. Die Liste "Speicher extern gefuehrt" ist
  * davon nicht beruehrt.
+ *
+ * Welle Bild 10 VOLL (0.9.34, Hausherr 11.10.2026: Vollausstattung, ein Laie soll das
+ * Maximum leicht uebernehmen koennen): zwei Seiten des Musterprojekts. "Einspeisebremse"
+ * (42 Zeilen; 1-15 unveraendert, dazu alle Werte der Vorlage, zweite Benachrichtigung
+ * "Hinweis", Tasten Ein/Aus und Schieberegler Zielstufe an der Steuervorlage) und
+ * "Einspeisebremse Speicher" (13 Zeilen, ersetzt die alte Liste "Speicher extern
+ * gefuehrt" mit 8 Zeilen). Je Seite ein Kasten mit Schritten und die Hinweise.
  */
 
 /** Ein Teil einer Zelle als HTML. */
@@ -1665,6 +1674,10 @@ function eb_baustein_teil(array $t)
             return eb_e($t[1]);
         case 'nr':
             return '#' . implode(', #', array_map('intval', $t[1]));
+        case 'e':
+            $e = array();
+            foreach ($t[1] as $k => $n) { $e[] = eb_e($k) . ' = #' . (int) $n; }
+            return implode(', ', $e);
     }
     return '';
 }
@@ -1689,78 +1702,166 @@ function eb_baustein_tabelle(array $zeilen)
     return $o . '</table>';
 }
 
-/** Die Sammelstoerung (Schritt 6). Welle Bild 8 (0.9.33): die 15 Zeilen des Musterprojekts;
- * jedes ODER hat zwei Eingaenge mit je einer Quelle (Regel A4). */
-function eb_bausteine_stoerung()
+/** Ein Befehl der Steuervorlage als Beispiel wie im Musterprojekt (Ordner einspeisebremse,
+ * Wortzeichen DEIN_TOKEN). Die Steuervorlage selbst traegt Adresse und Wortzeichen dieses
+ * LoxBerry (eb_vorlage_steuern()); die Abfrage kommt aus derselben Quelle (eb_steuer_befehle()). */
+function eb_befehl_beispiel($abfrage)
+{
+    return '/plugins/einspeisebremse/index.php?token=DEIN_TOKEN&' . $abfrage;
+}
+
+/** Seite "Einspeisebremse" (Werte, Meldungen und Steuerung). Welle Bild 10 VOLL (0.9.34):
+ * die 42 Zeilen des Musterprojekts; #1..#15 wie in 0.9.33. Jedes ODER hat zwei Eingaenge
+ * mit je einer Quelle, jede Benachrichtigung eine Quelle (Regel A4). */
+function eb_bausteine_werte()
 {
     $leer = array(array('t', 'BAUSTEIN.LEER'));
-    /* #1..#5: Eingaenge der Vorlage - Typ mit dem Vorlagentitel, Name = Titel aus eb_felder()
+    /* Eingaenge der Vorlage - Typ mit dem Vorlagentitel, Name = Titel aus eb_felder()
        wie in der Vorlage (Welle Bild 8, Musterprojekt). */
     $vi = array(array('ts', 'BAUSTEIN.B_VIBEF', eb_e(eb_vorlage_titel())));
-    return array(
-        1  => array($vi, array(array('vn', 'NETZ')), array(array('t', 'BAUSTEIN.B01_PARAM')), $leer),
-        2  => array($vi, array(array('vn', 'UEBERSCHUSS')), array(array('t', 'BAUSTEIN.B02_PARAM')), $leer),
-        3  => array($vi, array(array('vn', 'NOTFALL')), array(array('t', 'BAUSTEIN.B03_PARAM')), $leer),
-        4  => array($vi, array(array('vn', 'WIRKUNG')), array(array('t', 'BAUSTEIN.B04_PARAM')), $leer),
-        5  => array($vi, array(array('vn', 'ZAEHLER')), array(array('t', 'BAUSTEIN.B05_PARAM')), $leer),
-        6  => array(array(array('t', 'BAUSTEIN.T_KONSTANTE')), array(array('n', 'Konstante 1')),
-                    array(array('t', 'BAUSTEIN.B06_PARAM')), $leer),
-        7  => array(array(array('t', 'BAUSTEIN.T_STATUS')), array(array('n', 'Netz jetzt')),
-                    array(array('t', 'BAUSTEIN.B07_PARAM')), array(array('ts', 'BAUSTEIN.E_V1V2', 1, 2))),
-        8  => array(array(array('t', 'BAUSTEIN.T_SCHWELL')), array(array('n', 'Auflage verletzt')),
-                    array(array('t', 'BAUSTEIN.B08_PARAM')), array(array('ts', 'BAUSTEIN.E_EIN', 2))),
-        9  => array(array(array('t', 'BAUSTEIN.T_KLEINER')), array(array('n', 'Keine Wirkung')),
-                    array(array('t', 'BAUSTEIN.B09_PARAM')), array(array('ts', 'BAUSTEIN.E_V1', 4))),
-        10 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('n', 'Regelung gestört')), $leer,
-                    array(array('ts', 'BAUSTEIN.E_I1I2', 8, 9))),
-        11 => array(array(array('t', 'BAUSTEIN.T_EINVERZ')), array(array('n', 'Regelstörung hält an')),
-                    array(array('t', 'BAUSTEIN.B11_PARAM')), array(array('ts', 'BAUSTEIN.E_EIN', 10))),
-        12 => array(array(array('t', 'BAUSTEIN.T_VALID')), array(array('n', 'Dienst steht')),
-                    array(array('t', 'BAUSTEIN.B12_PARAM')), array(array('ts', 'BAUSTEIN.E_VEN', 5, 6))),
-        13 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('n', 'Dienst oder Messung gestört')), $leer,
+    /* Befehle der Steuervorlage - Typ mit ihrem Titel, Name und Abfrage aus eb_steuer_befehle(). */
+    $vq = array(array('ts', 'BAUSTEIN.B_VQBEF', eb_e(eb_vorlage_steuern_titel())));
+    $bef = eb_steuer_befehle();
+    $t = function ($k) { return array(array('t', 'BAUSTEIN.' . $k)); };
+    $n = function ($name) { return array(array('n', $name)); };
+    $ein = function ($nr) { return array(array('ts', 'BAUSTEIN.E_EIN', $nr)); };
+    $z = array(
+        1  => array($vi, array(array('vn', 'NETZ')), $t('B01_PARAM'), $leer),
+        2  => array($vi, array(array('vn', 'UEBERSCHUSS')), $t('B02_PARAM'), $leer),
+        3  => array($vi, array(array('vn', 'NOTFALL')), $t('B03_PARAM'), $leer),
+        4  => array($vi, array(array('vn', 'WIRKUNG')), $t('B04_PARAM'), $leer),
+        5  => array($vi, array(array('vn', 'ZAEHLER')), $t('B05_PARAM'), $leer),
+        6  => array($t('T_KONSTANTE'), $n('Konstante 1'), $t('B06_PARAM'), $leer),
+        7  => array($t('T_STATUS'), $n('Netz jetzt'), $t('B07_PARAM'), array(array('ts', 'BAUSTEIN.E_V1V2', 1, 2))),
+        8  => array($t('T_SCHWELL'), $n('Auflage verletzt'), $t('B08_PARAM'), $ein(2)),
+        9  => array($t('T_KLEINER'), $n('Keine Wirkung'), $t('B09_PARAM'), array(array('ts', 'BAUSTEIN.E_V1', 4))),
+        10 => array($t('T_ODER'), $n('Regelung gestört'), $leer, array(array('ts', 'BAUSTEIN.E_I1I2', 8, 9))),
+        11 => array($t('T_EINVERZ'), $n('Regelstörung hält an'), $t('B11_PARAM'), $ein(10)),
+        12 => array($t('T_VALID'), $n('Dienst steht'), $t('B12_PARAM'), array(array('ts', 'BAUSTEIN.E_VEN', 5, 6))),
+        13 => array($t('T_ODER'), $n('Dienst oder Messung gestört'), $leer,
                     array(array('ts', 'BAUSTEIN.E_I1_I2E', 3, 12))),
-        14 => array(array(array('t', 'BAUSTEIN.T_ODER')), array(array('n', 'Einspeisebremse gestört')), $leer,
-                    array(array('ts', 'BAUSTEIN.E_I1I2', 11, 13))),
-        15 => array(array(array('t', 'BAUSTEIN.T_BENACHR')), array(array('n', 'Meldung Einspeisebremse')),
-                    array(array('t', 'BAUSTEIN.B15_PARAM')), array(array('ts', 'BAUSTEIN.E_EIN', 14))),
+        14 => array($t('T_ODER'), $n('Einspeisebremse gestört'), $leer, array(array('ts', 'BAUSTEIN.E_I1I2', 11, 13))),
+        15 => array($t('T_BENACHR'), $n('Meldung Einspeisebremse'), $t('B15_PARAM'), $ein(14)),
     );
-}
-
-/** Die Hinweise unter der Sammelstoerung (Welle Bild 8: ohne Nummern, Wortlaut der Vorschrift). */
-function eb_bausteine_erl()
-{
-    $s = array();
-    foreach (array('H_VALIDIERUNG', 'H_ODER', 'H_AUFLAGE', 'H_WIRKUNG', 'H_NOTBETRIEB') as $k) {
-        $s[] = eb_t('BAUSTEIN.' . $k);
+    foreach (array(16 => 'EIN', 17 => 'ERZEUGUNG', 18 => 'GRENZE', 19 => 'GESTELLT', 20 => 'LADESOLL',
+                   21 => 'TAT', 22 => 'SPEICHER', 23 => 'ERSATZ', 24 => 'STUFE', 25 => 'ZIEL',
+                   26 => 'MESSALTER', 27 => 'ALTER', 28 => 'OK') as $nr => $feld) {
+        $z[$nr] = array($vi, array(array('vn', $feld)), $t(sprintf('B%02d_PARAM', $nr)), $leer);
     }
-    return implode('<br>', $s);
+    $z[29] = array($t('T_STATUS'), $n('Bremse jetzt'), $t('B29_PARAM'),
+                   array(array('e', array('V1' => 16, 'V2' => 21, 'V3' => 18, 'V4' => 17, 'V5' => 20, 'V6' => 19))));
+    $z[30] = array($t('T_STATUS'), $n('Zielstufe jetzt'), $t('B30_PARAM'), array(array('ts', 'BAUSTEIN.E_V1V2', 24, 25)));
+    $z[31] = array($t('T_STATUS'), $n('Messung jetzt'), $t('B31_PARAM'),
+                   array(array('e', array('V1' => 28, 'V2' => 23, 'V3' => 26, 'V4' => 27))));
+    $z[32] = array($t('T_GLEICH'), $n('Speicher folgt nicht'), $t('B09_PARAM'), array(array('ts', 'BAUSTEIN.E_V1', 22)));
+    $z[33] = array($t('T_EINVERZ'), $n('Speicher folgt nicht an'), $t('B33_PARAM'), $ein(32));
+    $z[34] = array($t('T_EINVERZ'), $n('Ersatzzähler hält an'), $t('B34_PARAM'), $ein(23));
+    $z[35] = array($t('T_ODER'), $n('Einspeisebremse Hinweis'), $leer, array(array('ts', 'BAUSTEIN.E_I1I2', 33, 34)));
+    $z[36] = array($t('T_BENACHR'), $n('Meldung Einspeisebremse Hinweis'), $t('B36_PARAM'), $ein(35));
+    $z[37] = array($t('T_VTASTE'), $n('Bremse einschalten'),
+                   array(array('ts', 'BAUSTEIN.B37_PARAM', eb_e(eb_klartext('TEST.K_MAENGEL')))), $leer);
+    $z[38] = array($vq, $n($bef['EIN'][0]),
+                   array(array('ts', 'BAUSTEIN.P_BEFEHL_EIN', array('m', eb_befehl_beispiel($bef['EIN'][2])))), $ein(37));
+    $z[39] = array($t('T_VTASTE'), $n('Bremse ausschalten'), $t('B39_PARAM'), $leer);
+    $z[40] = array($vq, $n($bef['AUS'][0]),
+                   array(array('ts', 'BAUSTEIN.P_BEFEHL_EIN', array('m', eb_befehl_beispiel($bef['AUS'][2])))), $ein(39));
+    $z[41] = array($t('T_VREGLER'), $n('Zielstufe'), $t('B41_PARAM'), $leer);
+    $z[42] = array($vq, $n($bef['STUFE'][0]),
+                   array(array('ts', 'BAUSTEIN.P_BEFEHL_STUFE', array('m', eb_befehl_beispiel($bef['STUFE'][2])))),
+                   $ein(41));
+    return $z;
 }
 
-/** Speicher extern gefuehrt (Energie-1 C5): was Loxone der Bremse liefern muss. */
-function eb_bausteine_extern()
+/** Seite "Einspeisebremse Speicher" (Speicher extern gefuehrt, Energie-1 C5): was Loxone der
+ * Bremse liefern muss. Welle Bild 10 VOLL (0.9.34): die 13 Zeilen des Musterprojekts statt der
+ * bisherigen 8 (Formeln ohne Vergleichszeichen, "kein Wert = 0", Zeitfunktion Unix Timestamp). */
+function eb_bausteine_speicher()
 {
     $leer = array(array('t', 'BAUSTEIN.LEER'));
+    $t = function ($k) { return array(array('t', 'BAUSTEIN.' . $k)); };
+    $n = function ($name) { return array(array('n', $name)); };
+    $ein = function ($nr) { return array(array('ts', 'BAUSTEIN.E_EIN', $nr)); };
+    $i12 = function ($a, $b) { return array(array('ts', 'BAUSTEIN.E_I1I2', $a, $b)); };
+    /* Der Ausgang fuer die Haus-Themen ist eine Vorlage des Musterprojekts
+       (VQ_loxberry_mqtt_haus.xml), keine Vorlage dieses Plugins; die Themen wie eb_haus_themen(). */
+    $mq = array(array('ts', 'BAUSTEIN.B_VQBEF', eb_e('LoxBerry MQTT Haus')));
     return array(
-        1 => array(array(array('t', 'BAUSTEIN.T_FORMEL')), array(array('t', 'BAUSTEIN.X01_NAME')),
-                   array(array('m', 'MIN(2500;MAX(0;2500-I1))*(I2<97)')), array(array('t', 'BAUSTEIN.X01_EIN'))),
-        2 => array(array(array('t', 'BAUSTEIN.T_FORMEL')), array(array('t', 'BAUSTEIN.X02_NAME')),
-                   array(array('m', 'MAX(0;I3-MAX(0;I1))*(I2<I4)')), array(array('t', 'BAUSTEIN.X02_EIN'))),
-        3 => array(array(array('t', 'BAUSTEIN.T_FORMEL')), array(array('t', 'BAUSTEIN.X03_NAME')),
-                   array(array('m', 'I1+I2'), array('t', 'BAUSTEIN.X03_PARAM')),
-                   array(array('ts', 'BAUSTEIN.E_I1I2', 1, 2))),
-        4 => array(array(array('t', 'BAUSTEIN.T_AUSGANG')), array(array('t', 'BAUSTEIN.X04_NAME')),
-                   array(array('ts', 'BAUSTEIN.X04_PARAM', 11884)), $leer),
-        5 => array(array(array('ts', 'BAUSTEIN.T_AUSGANG_BEFEHL', 4)), array(array('t', 'BAUSTEIN.X05_NAME')),
-                   array(array('ts', 'BAUSTEIN.X05_PARAM', array('m', 'publish haus/energie/aufnahme_w <v>'))),
-                   array(array('nr', array(3)))),
-        6 => array(array(array('t', 'BAUSTEIN.T_IMPULS')), array(array('t', 'BAUSTEIN.X06_NAME')),
-                   array(array('t', 'BAUSTEIN.X06_PARAM')), $leer),
-        7 => array(array(array('t', 'BAUSTEIN.T_ANALOGSPEICHER')), array(array('t', 'BAUSTEIN.X07_NAME')),
-                   array(array('t', 'BAUSTEIN.X07_PARAM')), array(array('ts', 'BAUSTEIN.X07_EIN', 6))),
-        8 => array(array(array('ts', 'BAUSTEIN.T_AUSGANG_BEFEHL', 4)), array(array('t', 'BAUSTEIN.X08_NAME')),
-                   array(array('ts', 'BAUSTEIN.X08_PARAM', array('m', 'publish haus/energie/aufnahme_ts <v>'))),
-                   array(array('nr', array(7)))),
+        1  => array($t('T_VEIN'), $n('Ladeleistung Speicher 1 (eigene Quelle)'), $t('SP01_PARAM'), $leer),
+        2  => array($t('T_VEIN'), $n('Ladezustand Speicher 1 (Proz) (eigene Quelle)'), $t('SP02_PARAM'), $leer),
+        3  => array($t('T_FORMEL'), $n('Restaufnahme Speicher 1'),
+                    array(array('m', 'MIN(2500;MAX(0;2500-I1))*MIN(1;MAX(0;97-I2))*MIN(1;MAX(0;I2))'),
+                          array('t', 'BAUSTEIN.SP03_PARAM')), $i12(1, 2)),
+        4  => array($t('T_VEIN'), $n('Ladeleistung Speicher 2 (eigene Quelle)'), $t('SP04_PARAM'), $leer),
+        5  => array($t('T_VEIN'), $n('Ladezustand Speicher 2 (Proz) (eigene Quelle)'), $t('SP05_PARAM'), $leer),
+        6  => array($t('T_FORMEL'), $n('Restaufnahme Speicher 2'),
+                    array(array('m', 'MAX(0;4400-MAX(0;I1))*MIN(1;MAX(0;95-I2))*MIN(1;MAX(0;I2))'),
+                          array('t', 'BAUSTEIN.SP06_PARAM')), $i12(4, 5)),
+        7  => array($t('T_FORMEL'), $n('Speicher-Aufnahme'),
+                    array(array('m', 'I1+I2'), array('t', 'BAUSTEIN.SP07_PARAM')), $i12(3, 6)),
+        8  => array($mq, $n('Speicher-Aufnahme senden'),
+                    array(array('ts', 'BAUSTEIN.SP08_PARAM', array('m', 'publish haus/energie/aufnahme_w <v.0>'))),
+                    $ein(7)),
+        9  => array($t('T_IMPULS'), $n('Takt Zeitstempel'), $t('SP09_PARAM'), $leer),
+        10 => array($t('T_ZEITFKT'), $n('Unix Timestamp'), $t('SP10_PARAM'), $leer),
+        11 => array($t('T_ANALOGSPEICHER'), $n('Zeitstempel'), $t('SP11_PARAM'),
+                    array(array('ts', 'BAUSTEIN.E_V_SETQ', 10, 9))),
+        12 => array($mq, $n('Zeitstempel senden'),
+                    array(array('ts', 'BAUSTEIN.SP12_PARAM', array('m', 'publish haus/energie/aufnahme_ts <v.0>'))),
+                    $ein(11)),
+        13 => array($t('T_STATUS'), $n('Speicher-Aufnahme jetzt'), $t('SP13_PARAM'),
+                    array(array('e', array('V1' => 7, 'V2' => 3, 'V3' => 6)))),
     );
+}
+
+/** Der Kasten "So uebernehmen Sie diese Seite": nummerierte Schritte aus der Bauanleitung des
+ * Musterprojekts (Musterprojekt/entwurf_welle10_voll.txt); Knopf-, Reiter- und Feldnamen aus
+ * den Schluesseln, die die Oberflaeche selbst zeigt. Jeder Eintrag ist fertiges HTML. */
+function eb_bausteine_schritte($seite)
+{
+    $k = function ($s) { return eb_e(eb_klartext($s)); };
+    if ($seite === 'W') {
+        $s = array(
+            array('W_S1', $k('LOX.K_VI')),
+            array('W_S2', $k('LOX.K_VQ'), eb_e(eb_vorlage_steuern_titel()), $k('LOX.H_ADRESSE')),
+            array('W_S3', $k('REITER.EINSTELLUNGEN')),
+            array('W_S4', eb_e(eb_vorlage_titel())),
+            array('W_S5'),
+            array('W_S6'),
+            array('W_S7'),
+            array('W_S8', eb_e(eb_vorlage_steuern_titel())),
+            array('W_S9', $k('BAUSTEIN.K_EINGANG')),
+            array('W_S10', $k('TEST.K_MAENGEL')),
+        );
+    } else {
+        $s = array(
+            array('SP_S1', $k('REITER.EINSTELLUNGEN'), $k('EINST.L_SPEICHER_EXTERN')),
+            array('SP_S2', 11884),
+            array('SP_S3'),
+            array('SP_S4'),
+            array('SP_S5'),
+            array('SP_S6'),
+            array('SP_S7', $k('BAUSTEIN.K_EINGANG')),
+            array('SP_S8', $k('EINST.L_SPEICHER_EXTERN'), $k('SP.EXTERN_WERT')),
+        );
+    }
+    $aus = array();
+    foreach ($s as $e) {
+        $text = eb_t('BAUSTEIN.' . $e[0]);
+        $aus[] = count($e) > 1 ? vsprintf($text, array_slice($e, 1)) : $text;
+    }
+    return $aus;
+}
+
+/** Die Hinweise unter einer Liste (Seite "W" oder "SP"), je fertiges HTML. */
+function eb_bausteine_hinweise($seite)
+{
+    $k = $seite === 'W'
+        ? array('H_VALIDIERUNG', 'H_ODER', 'H_AUFLAGE', 'H_WIRKUNG', 'H_NOTBETRIEB',
+                'H_TAT', 'H_AUS', 'H_STUFE', 'H_SPEICHER')
+        : array('SP_H1', 'SP_H2', 'SP_H3', 'SP_H4', 'SP_H5');
+    $h = array();
+    foreach ($k as $s) { $h[] = eb_t('BAUSTEIN.' . $s); }
+    return $h;
 }
 
 /**
@@ -1996,13 +2097,28 @@ function eb_einmal_lesen()
     );
 }
 
-function eb_endpunkt()
+/** Der Rechner, unter dem der Miniserver den LoxBerry erreicht: http://<Name>.
+ * Welle Bild 10 VOLL (0.9.34): aus eb_endpunkt() herausgeloest, weil die Steuervorlage
+ * Adresse (Rechner) und Befehl (Weg) getrennt traegt. Die Ausgabe von eb_endpunkt() ist
+ * unveraendert. */
+function eb_endpunkt_basis()
 {
-    $p = eb_paths();
     $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
-    return 'http://' . $host . '/plugins/' . $p['plugin'] . '/index.php';
+    return 'http://' . $host;
+}
+
+/** Der Weg zum Endpunkt auf diesem Rechner: /plugins/<Ordner>/index.php. */
+function eb_endpunkt_pfad()
+{
+    $p = eb_paths();
+    return '/plugins/' . $p['plugin'] . '/index.php';
+}
+
+function eb_endpunkt()
+{
+    return eb_endpunkt_basis() . eb_endpunkt_pfad();
 }
 
 /**
@@ -2075,6 +2191,98 @@ function eb_vorlage()
         'address' => $adresse,
         'polling' => '10',
         'comment' => sprintf(eb_klartext('EB_XML.KOPF'), date('d.m.Y')),
+    ), $cmds));
+}
+
+/* ==================================================================
+ * Die Steuervorlage (Welle Bild 10 VOLL, 0.9.34, neue Faehigkeit)
+ *
+ * Ein virtueller Ausgang "Einspeisebremse steuern" mit den drei Befehlen,
+ * die der Endpunkt (webfrontend/html/index.php) schon immer annimmt:
+ * Regelung ein, Regelung aus, Zielstufe 0/1/2. Bis 0.9.33 nannte Schritt 4
+ * den Ausgang nur in Worten. Inhalt wie im LoxBerry-Plugins Musterprojekt
+ * (Musterprojekt/vorlagen/VQ_einspeisebremse_steuern.xml); Adresse und
+ * Wortzeichen traegt das Plugin selbst ein - wie bei der Eingangsvorlage.
+ * Am Endpunkt aendert sich nichts: ein Wattwert von aussen bleibt verboten.
+ * ================================================================== */
+
+/** Der Titel der Steuervorlage. Die Baustein-Liste nennt ihn aus derselben Quelle. */
+function eb_vorlage_steuern_titel()
+{
+    return 'Einspeisebremse steuern';
+}
+
+/**
+ * Die drei Befehle der Steuervorlage - EINE Quelle fuer Vorlage und Baustein-Liste.
+ * Je Befehl: Titel, Kommentar, Abfrage am Endpunkt, analog. Titel und Kommentare wie
+ * im Musterprojekt und, wie die Bausteinnamen der Liste, in beiden Sprachen gleich.
+ * <v.0>: ganze Zahl ohne Nachkommastelle - der Endpunkt nimmt nur "0", "1" oder "2".
+ */
+function eb_steuer_befehle()
+{
+    return array(
+        'EIN'   => array('Regelung einschalten',
+                         'Regelung ein; das Plugin lehnt ab, solange ein sperrender Mangel besteht',
+                         'aktion=ein&wert=1', false),
+        'AUS'   => array('Regelung ausschalten', 'Regelung aus; gibt die Anlage einmal ganz frei',
+                         'aktion=ein&wert=0', false),
+        'STUFE' => array('Zielstufe wählen', 'Stufe 0, 1 oder 2 (Werte im Reiter Einstellungen)',
+                         'aktion=stufe&wert=<v.0>', true),
+    );
+}
+
+/**
+ * VirtualOut in der Hausform (wie zd_xml_virtual_out() der Linie ZendureSolarFlow,
+ * dort gegen einen echten Export gemessen): Wurzel HintText, Title, Comment, Address,
+ * CmdInit, CloseAfterSend, CmdSep; erstes Kind Info templateType="3"; je Befehl Title,
+ * Comment, CmdOnMethod, CmdOn, CmdOffMethod, CmdOff, Analog, Repeat, RepeatRate, HintText.
+ * CRLF und Tabulator wie eb_xml_virtual_in_http(). CloseAfterSend="true" wie die
+ * Musterprojekt-Datei: jeder Befehl ist ein einzelner GET.
+ */
+function eb_xml_virtual_out($kopf, $cmds)
+{
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut HintText="" ';
+    $o .= 'Title="' . eb_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . eb_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . eb_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'CmdInit="" CloseAfterSend="true" CmdSep=""';
+    $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualOutCmd ';
+        $o .= 'Title="' . eb_x($c['title']) . '" ';
+        $o .= 'Comment="' . eb_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'CmdOnMethod="GET" ';
+        $o .= 'CmdOn="' . eb_x(isset($c['on']) ? $c['on'] : '') . '" ';
+        $o .= 'CmdOffMethod="GET" ';
+        $o .= 'CmdOff="" ';
+        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '" ';
+        $o .= 'Repeat="0" RepeatRate="0" HintText=""';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return $o;
+}
+
+/** Die Steuervorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt).
+ * Schaltet nichts; liest nur das Wortzeichen (eb_token(), wie eb_vorlage()). */
+function eb_vorlage_steuern()
+{
+    $cmds = array();
+    foreach (eb_steuer_befehle() as $b) {
+        $cmds[] = array(
+            'title'   => $b[0],
+            'comment' => $b[1],
+            'on'      => eb_endpunkt_pfad() . '?token=' . eb_token() . '&' . $b[2],
+            'analog'  => $b[3],
+        );
+    }
+    return array('VQ_einspeisebremse_steuern.xml', eb_xml_virtual_out(array(
+        'title'   => eb_vorlage_steuern_titel(),
+        'comment' => 'LoxBerry-Plugin Einspeisebremse',
+        'address' => eb_endpunkt_basis(),
     ), $cmds));
 }
 

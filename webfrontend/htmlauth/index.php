@@ -252,7 +252,10 @@ if (!$eb_post) {
  * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($eb_post && isset($_POST['vorlage'])) {
-    list($eb_name, $eb_inhalt) = eb_vorlage();
+    /* Welle Bild 10 VOLL (0.9.34): value "vq" liefert die Steuervorlage (virtueller Ausgang
+     * "Einspeisebremse steuern"), jeder andere Wert wie bisher die Eingangsvorlage. */
+    list($eb_name, $eb_inhalt) = (is_string($_POST['vorlage']) && $_POST['vorlage'] === 'vq')
+        ? eb_vorlage_steuern() : eb_vorlage();
     if ($eb_inhalt === '') {
         $eb_fehler[] = eb_t('LOX.FEHLER_VORLAGE');
         $eb_tab = 'tab-loxone';
@@ -969,6 +972,9 @@ if ($eb_rahmen) {
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 10 VOLL: Schritte und Hinweise je Baustein-Liste (wie Welle 9 VOLL). */
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 
 </style>
 
@@ -1466,6 +1472,7 @@ list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
 
 <h2><?= eb_e(eb_t('LOX.H_VORLAGE')) ?></h2>
 <div class="sm-step"><?= eb_t('LOX.ERKLAERUNG') ?></div>
+<div class="sm-step"><?= eb_t('LOX.ERKLAERUNG_VQ') ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-technik"></i> <?= eb_t('LEGENDE.TECHNIK_XML') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= eb_t('LEGENDE.AKTION_TOKEN') ?></span>
@@ -1475,6 +1482,7 @@ list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
     <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vi"><?= eb_e(eb_t('LOX.K_VI')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vq"><?= eb_e(eb_t('LOX.K_VQ')) ?></button>
   </form>
   <form action="index.php" method="post">
     <?php echo eb_fmt(); ?>
@@ -1512,19 +1520,36 @@ list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
 <?php } ?>
 </table>
 
-<h3><?= eb_e(eb_t('LOX.H_BAUSTEINE')) ?></h3>
-<?= eb_baustein_tabelle(eb_bausteine_stoerung()) /* X-8/A4: Tabelle aus dem Code, Texte aus [BAUSTEIN] */ ?>
-<p class="sm-hilfe"><?= eb_bausteine_erl() ?></p>
+<h2><?= eb_e(eb_t('LOX.H_BAUSTEINE')) ?></h2>
+<?php
+/* Welle Bild 10 VOLL (0.9.34): zwei Seiten aus dem LoxBerry-Plugins Musterprojekt, beide immer
+ * sichtbar - je Ueberschrift, Kasten mit Schritten, Tabelle (eb_baustein_tabelle(), Texte aus
+ * [BAUSTEIN]), Hinweise, Bild und Link. Bis 0.9.33: Sammelstoerung (15 Zeilen) und
+ * "Speicher extern gefuehrt" (8 Zeilen). */
+foreach (array(
+    array('W', 'LOX.BL_WERTE', eb_bausteine_werte(), 'einbindung_loxone_werte.png', 'Einspeisebremse'),
+    array('SP', 'LOX.BL_SPEICHER', eb_bausteine_speicher(), 'einbindung_loxone_speicher.png', 'Einspeisebremse Speicher'),
+) as $eb_bs) { ?>
+<h3><?= eb_e(eb_t($eb_bs[1])) ?></h3>
+<div class="sm-hinweis"><b><?= eb_e(eb_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach (eb_bausteine_schritte($eb_bs[0]) as $eb_bx) { ?>
+<li><?= $eb_bx ?></li>
+<?php } ?>
+</ol></div>
+<?= eb_baustein_tabelle($eb_bs[2]) /* X-8/A4: Tabelle aus dem Code, Texte aus [BAUSTEIN] */ ?>
+<div class="sm-warnung"><b><?= eb_e(eb_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach (eb_bausteine_hinweise($eb_bs[0]) as $eb_bx) { ?>
+<li><?= $eb_bx ?></li>
+<?php } ?>
+</ul></div>
 <figure class="sm-bild">
-<img src="einbindung_loxone.png" alt="<?= eb_e(eb_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= eb_e(eb_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+<img src="<?= eb_e($eb_bs[3]) ?>" alt="<?= eb_e(sprintf(eb_t('LOX.BILD_ALT'), $eb_bs[4])) ?>" loading="lazy">
+<figcaption><?= eb_e(sprintf(eb_t('LOX.BILD_UNTERSCHRIFT'), $eb_bs[4])) ?></figcaption>
 </figure>
 <p class="sm-hilfe"><?= eb_t('LOX.MUSTERPROJEKT') ?></p>
-
-<h3><?= eb_e(eb_t('LOX.H_EXTERN')) ?></h3>
-<div class="sm-step"><?= eb_t('LOX.EXTERN_ERKLAERUNG') ?></div>
-<?= eb_baustein_tabelle(eb_bausteine_extern()) ?>
-<p class="sm-hilfe"><?= eb_t('LOX.EXTERN_HINWEISE') ?></p>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
