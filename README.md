@@ -3,9 +3,17 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.34 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.35 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.35
+
+Einbindung in Loxone: Eingang En der Analogwertvalidierung (#12 „Dienst steht“ auf der Seite
+„Einspeisebremse“) nicht negieren (Hinweis und Bild). Config legt den Eingang negiert an; die Konstante 1
+kam dann als 0 an, und ohne diese Korrektur löste die Ausfallmeldung nie aus. Wer die Seite schon gebaut
+hat: im Eigenschaftsfenster der Analogwertvalidierung unter Parameter den Haken bei „En“ entfernen.
+Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.34
 
