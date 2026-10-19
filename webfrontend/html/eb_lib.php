@@ -266,6 +266,11 @@ function eb_vorgaben()
         'sp_steller'      => array(),
         'mqtt_ein'        => 1,
         'mqtt_topic'      => 'einspeisebremse',
+        /* Gruppe 3 / MQTT (0.9.37): die beiden Haken der Befehlsbruecke, ab Werk aus (Entwurf eb E6):
+         * "Befehle ueber MQTT annehmen" und der zweite Haken "Bremse ueber MQTT steuern" - ohne ihn
+         * quittiert die Bruecke einschalten, ausschalten und stufe mit "abgelehnt: zweiter Haken aus". */
+        'befehle_mqtt_ein'     => 0,
+        'befehle_mqtt_steuern' => 0,
         'aktionstoken'    => '',
     );
     /* Jede Messquelle bekommt ihren Platz - aus der EINEN Liste. Was oben
@@ -500,6 +505,8 @@ function eb_config($erzeugen = true)
     $cfg['haus_netz_ein'] = empty($cfg['haus_netz_ein']) ? 0 : 1;
     $cfg['steller_von_ein'] = empty($cfg['steller_von_ein']) ? 0 : 1;
     $cfg['mqtt_ein'] = empty($cfg['mqtt_ein']) ? 0 : 1;
+    $cfg['befehle_mqtt_ein'] = empty($cfg['befehle_mqtt_ein']) ? 0 : 1;
+    $cfg['befehle_mqtt_steuern'] = empty($cfg['befehle_mqtt_steuern']) ? 0 : 1;
     $cfg['bilanz_ein'] = empty($cfg['bilanz_ein']) ? 0 : 1;
     $cfg['verlauf_ein'] = empty($cfg['verlauf_ein']) ? 0 : 1;
     $cfg['stufe'] = max(0, min(2, (int) eb_zahl($cfg['stufe'], 0)));
@@ -1610,7 +1617,10 @@ function eb_mqtt_themen()
 /** Die Schluessel, die mit Energie-1 hinzukamen: eine aeltere Sicherung darf sie nicht kennen. */
 function eb_sicherung_neue_schluessel()
 {
-    return array('speicher_extern', 'extern_wirkung_s', 'haus_netz_ein', 'steller_von_ein');
+    /* Gruppe 3 / MQTT (0.9.37): dazu die beiden Haken der Befehlsbruecke - eine Sicherung bis 0.9.36 kennt
+     * sie nicht; sie behalten dann den laufenden Wert (ab Werk aus). */
+    return array('speicher_extern', 'extern_wirkung_s', 'haus_netz_ein', 'steller_von_ein',
+                 'befehle_mqtt_ein', 'befehle_mqtt_steuern');
 }
 
 /* ================= Baustein-Listen (Reiter Einbindung in Loxone) ==========
@@ -1670,6 +1680,9 @@ function eb_baustein_teil(array $t)
         case 'vn':
             $f = eb_felder();
             return '<span class="sm-mono">' . eb_e(eb_klartext($f[$t[1]][4])) . '</span>';
+        case 'gw':
+            /* Gruppe 3 / MQTT (0.9.37): Name eines Virtuellen Eingangs, wie das MQTT-Gateway ihn vergibt. */
+            return '<span class="sm-mono">' . eb_e(eb_mqtt_gateway_name($t[1])) . '</span>';
         case 'n':
             return eb_e($t[1]);
         case 'nr':
@@ -1702,37 +1715,32 @@ function eb_baustein_tabelle(array $zeilen)
     return $o . '</table>';
 }
 
-/** Ein Befehl der Steuervorlage als Beispiel wie im Musterprojekt (Ordner einspeisebremse,
- * Wortzeichen DEIN_TOKEN). Die Steuervorlage selbst traegt Adresse und Wortzeichen dieses
- * LoxBerry (eb_vorlage_steuern()); die Abfrage kommt aus derselben Quelle (eb_steuer_befehle()). */
-function eb_befehl_beispiel($abfrage)
-{
-    return '/plugins/einspeisebremse/index.php?token=DEIN_TOKEN&' . $abfrage;
-}
-
 /** Seite "Einspeisebremse" (Werte, Meldungen und Steuerung). Welle Bild 10 VOLL (0.9.34):
  * die 42 Zeilen des Musterprojekts; #1..#15 wie in 0.9.33. Jedes ODER hat zwei Eingaenge
- * mit je einer Quelle, jede Benachrichtigung eine Quelle (Regel A4). */
+ * mit je einer Quelle, jede Benachrichtigung eine Quelle (Regel A4). Gruppe 3 / MQTT (0.9.37):
+ * Virtuelle Eingaenge mit Gateway-Namen, Befehle am Ausgang "LoxBerry MQTT-Gateway". */
 function eb_bausteine_werte()
 {
     $leer = array(array('t', 'BAUSTEIN.LEER'));
-    /* Eingaenge der Vorlage - Typ mit dem Vorlagentitel, Name = Titel aus eb_felder()
-       wie in der Vorlage (Welle Bild 8, Musterprojekt). */
-    $vi = array(array('ts', 'BAUSTEIN.B_VIBEF', eb_e(eb_vorlage_titel())));
-    /* Befehle der Steuervorlage - Typ mit ihrem Titel, Name und Abfrage aus eb_steuer_befehle(). */
-    $vq = array(array('ts', 'BAUSTEIN.B_VQBEF', eb_e(eb_vorlage_steuern_titel())));
-    $bef = eb_steuer_befehle();
+    /* Gruppe 3 / MQTT (0.9.37, Entwurf eb Abschnitt 9): die Eingaenge sind Virtuelle Eingaenge mit dem Namen,
+       den das MQTT-Gateway vergibt (eb_mqtt_gateway_name()), keine Befehle der HTTP-Vorlage mehr; die drei
+       Befehle haengen am gemeinsamen Ausgang "LoxBerry MQTT-Gateway" des Musterprojekts. #26/#27 (Alter in
+       Sekunden) entfallen; #7 und #31 bekommen die Zeilen ohne Sekunden. Die HTTP-Vorlagen bleiben fuer
+       bestehende Anlagen, die Liste liest sie nicht mehr. */
+    $vi = array(array('ts', 'BAUSTEIN.B_VIMQTT', eb_e('Einspeisebremse')));
+    $vq = array(array('ts', 'BAUSTEIN.B_VQMQTT', eb_e('LoxBerry MQTT-Gateway')));
     $t = function ($k) { return array(array('t', 'BAUSTEIN.' . $k)); };
     $n = function ($name) { return array(array('n', $name)); };
+    $gw = function ($thema) { return array(array('gw', $thema)); };
     $ein = function ($nr) { return array(array('ts', 'BAUSTEIN.E_EIN', $nr)); };
     $z = array(
-        1  => array($vi, array(array('vn', 'NETZ')), $t('B01_PARAM'), $leer),
-        2  => array($vi, array(array('vn', 'UEBERSCHUSS')), $t('B02_PARAM'), $leer),
-        3  => array($vi, array(array('vn', 'NOTFALL')), $t('B03_PARAM'), $leer),
-        4  => array($vi, array(array('vn', 'WIRKUNG')), $t('B04_PARAM'), $leer),
-        5  => array($vi, array(array('vn', 'ZAEHLER')), $t('B05_PARAM'), $leer),
+        1  => array($vi, $gw('netz'), $t('B01_PARAM'), $leer),
+        2  => array($vi, $gw('ueberschuss'), $t('B02_PARAM'), $leer),
+        3  => array($vi, $gw('notfall'), $t('B03_PARAM'), $leer),
+        4  => array($vi, $gw('wirkung'), $t('B04_PARAM'), $leer),
+        5  => array($vi, $gw('status/zaehler'), $t('B05_PARAM'), $leer),
         6  => array($t('T_KONSTANTE'), $n('Konstante 1'), $t('B06_PARAM'), $leer),
-        7  => array($t('T_STATUS'), $n('Netz jetzt'), $t('B07_PARAM'), array(array('ts', 'BAUSTEIN.E_V1V2', 1, 2))),
+        7  => array($t('T_STATUS'), $n('Netz jetzt'), $t('B07_PARAM'), array(array('e', array('V1' => 1, 'V2' => 2, 'V3' => 28)))),
         8  => array($t('T_SCHWELL'), $n('Auflage verletzt'), $t('B08_PARAM'), $ein(2)),
         9  => array($t('T_KLEINER'), $n('Keine Wirkung'), $t('B09_PARAM'), array(array('ts', 'BAUSTEIN.E_V1', 4))),
         10 => array($t('T_ODER'), $n('Regelung gestört'), $leer, array(array('ts', 'BAUSTEIN.E_I1I2', 8, 9))),
@@ -1743,16 +1751,20 @@ function eb_bausteine_werte()
         14 => array($t('T_ODER'), $n('Einspeisebremse gestört'), $leer, array(array('ts', 'BAUSTEIN.E_I1I2', 11, 13))),
         15 => array($t('T_BENACHR'), $n('Meldung Einspeisebremse'), $t('B15_PARAM'), $ein(14)),
     );
-    foreach (array(16 => 'EIN', 17 => 'ERZEUGUNG', 18 => 'GRENZE', 19 => 'GESTELLT', 20 => 'LADESOLL',
-                   21 => 'TAT', 22 => 'SPEICHER', 23 => 'ERSATZ', 24 => 'STUFE', 25 => 'ZIEL',
-                   26 => 'MESSALTER', 27 => 'ALTER', 28 => 'OK') as $nr => $feld) {
-        $z[$nr] = array($vi, array(array('vn', $feld)), $t(sprintf('B%02d_PARAM', $nr)), $leer);
+    foreach (array(16 => 'ein', 17 => 'erzeugung', 18 => 'grenze', 19 => 'gestellt', 20 => 'ladesoll',
+                   21 => 'tat', 22 => 'speicher', 23 => 'ersatz', 24 => 'stufe', 25 => 'ziel') as $nr => $thema) {
+        $z[$nr] = array($vi, $gw($thema), $t(sprintf('B%02d_PARAM', $nr)), $leer);
     }
+    /* Die Alter in Sekunden (bis 0.9.36 #26 und #27 aus der HTTP-Vorlage) entfallen (Entwurf eb E3); die Zeile
+       bleibt mit ihrem alten Namen stehen, damit die Nummern der Seite gleich bleiben. */
+    $z[26] = array($t('T_ENTFAELLT'), array(array('vn', 'MESSALTER')), $t('B26_PARAM'), $leer);
+    $z[27] = array($t('T_ENTFAELLT'), array(array('vn', 'ALTER')), $t('B27_PARAM'), $leer);
+    $z[28] = array($vi, $gw('status/ok'), $t('B28_PARAM'), $leer);
     $z[29] = array($t('T_STATUS'), $n('Bremse jetzt'), $t('B29_PARAM'),
                    array(array('e', array('V1' => 16, 'V2' => 21, 'V3' => 18, 'V4' => 17, 'V5' => 20, 'V6' => 19))));
     $z[30] = array($t('T_STATUS'), $n('Zielstufe jetzt'), $t('B30_PARAM'), array(array('ts', 'BAUSTEIN.E_V1V2', 24, 25)));
     $z[31] = array($t('T_STATUS'), $n('Messung jetzt'), $t('B31_PARAM'),
-                   array(array('e', array('V1' => 28, 'V2' => 23, 'V3' => 26, 'V4' => 27))));
+                   array(array('ts', 'BAUSTEIN.E_V1V2V3_V4E', 28, 23, 3, 12)));
     $z[32] = array($t('T_GLEICH'), $n('Speicher folgt nicht'), $t('B09_PARAM'), array(array('ts', 'BAUSTEIN.E_V1', 22)));
     $z[33] = array($t('T_EINVERZ'), $n('Speicher folgt nicht an'), $t('B33_PARAM'), $ein(32));
     $z[34] = array($t('T_EINVERZ'), $n('Ersatzzähler hält an'), $t('B34_PARAM'), $ein(23));
@@ -1760,15 +1772,16 @@ function eb_bausteine_werte()
     $z[36] = array($t('T_BENACHR'), $n('Meldung Einspeisebremse Hinweis'), $t('B36_PARAM'), $ein(35));
     $z[37] = array($t('T_VTASTE'), $n('Bremse einschalten'),
                    array(array('ts', 'BAUSTEIN.B37_PARAM', eb_e(eb_klartext('TEST.K_MAENGEL')))), $leer);
-    $z[38] = array($vq, $n($bef['EIN'][0]),
-                   array(array('ts', 'BAUSTEIN.P_BEFEHL_EIN', array('m', eb_befehl_beispiel($bef['EIN'][2])))), $ein(37));
+    /* Die Befehle wie Loxone sie sendet (eb_befehl_loxone(), Praefix wie eingestellt); Namen wie im Musterprojekt,
+       in beiden Sprachen gleich. */
+    $z[38] = array($vq, $n('Einspeisebremse: Regelung einschalten'),
+                   array(array('ts', 'BAUSTEIN.B38_PARAM', array('m', eb_befehl_loxone('einschalten')))), $ein(37));
     $z[39] = array($t('T_VTASTE'), $n('Bremse ausschalten'), $t('B39_PARAM'), $leer);
-    $z[40] = array($vq, $n($bef['AUS'][0]),
-                   array(array('ts', 'BAUSTEIN.P_BEFEHL_EIN', array('m', eb_befehl_beispiel($bef['AUS'][2])))), $ein(39));
+    $z[40] = array($vq, $n('Einspeisebremse: Regelung ausschalten'),
+                   array(array('ts', 'BAUSTEIN.B40_PARAM', array('m', eb_befehl_loxone('ausschalten')))), $ein(39));
     $z[41] = array($t('T_VREGLER'), $n('Zielstufe'), $t('B41_PARAM'), $leer);
-    $z[42] = array($vq, $n($bef['STUFE'][0]),
-                   array(array('ts', 'BAUSTEIN.P_BEFEHL_STUFE', array('m', eb_befehl_beispiel($bef['STUFE'][2])))),
-                   $ein(41));
+    $z[42] = array($vq, $n('Einspeisebremse: Zielstufe wählen'),
+                   array(array('ts', 'BAUSTEIN.B42_PARAM', array('m', eb_befehl_loxone('stufe')))), $ein(41));
     return $z;
 }
 
@@ -1820,17 +1833,20 @@ function eb_bausteine_schritte($seite)
 {
     $k = function ($s) { return eb_e(eb_klartext($s)); };
     if ($seite === 'W') {
+        /* Gruppe 3 / MQTT (0.9.37, Entwurf eb 2.5): W_S1 Eingaenge nach der Namenstabelle statt Vorlage, W_S2 die
+           drei Befehle am gemeinsamen Ausgang (oder die Vorlage MQTT-Befehle) ohne Wortzeichen, W_S4 Nr. 1-5,
+           16-25 und 28, W_S8 Ausgang "LoxBerry MQTT-Gateway", W_S10 dazu beide Haken im Reiter MQTT. */
         $s = array(
-            array('W_S1', $k('LOX.K_VI')),
-            array('W_S2', $k('LOX.K_VQ'), eb_e(eb_vorlage_steuern_titel()), $k('LOX.H_ADRESSE')),
+            array('W_S1', $k('LOX.M_S3_KURZ')),
+            array('W_S2', eb_e('LoxBerry MQTT-Gateway'), $k('BEFEHL.K_VORLAGE')),
             array('W_S3', $k('REITER.EINSTELLUNGEN')),
-            array('W_S4', eb_e(eb_vorlage_titel())),
+            array('W_S4'),
             array('W_S5'),
             array('W_S6'),
             array('W_S7'),
-            array('W_S8', eb_e(eb_vorlage_steuern_titel())),
+            array('W_S8', eb_e('LoxBerry MQTT-Gateway')),
             array('W_S9', $k('BAUSTEIN.K_EINGANG')),
-            array('W_S10', $k('TEST.K_MAENGEL')),
+            array('W_S10', $k('BEFEHL.HAKEN_EIN'), $k('BEFEHL.HAKEN_STEUERN_KURZ'), $k('TEST.K_MAENGEL')),
         );
     } else {
         $s = array(
@@ -1984,7 +2000,8 @@ function eb_felder()
     return array(
         'EIN'         => array('',  0,       1,       'EB_FELD.EIN', 'EB_TITEL.EIN'),
         'NETZ'        => array('W', -200000, 200000,  'EB_FELD.NETZ', 'EB_TITEL.NETZ'),
-        'ERZEUGUNG'   => array('W', 0,       200000,  'EB_FELD.ERZEUGUNG', 'EB_TITEL.ERZEUGUNG'),
+        /* Gruppe 3 (0.9.37, Entwurf eb 2.3): -1 = nicht gemessen, ueber MQTT und in der HTTP-Zeile. */
+        'ERZEUGUNG'   => array('W', -1,      200000,  'EB_FELD.ERZEUGUNG', 'EB_TITEL.ERZEUGUNG'),
         'UEBERSCHUSS' => array('W', -200000, 200000,  'EB_FELD.UEBERSCHUSS', 'EB_TITEL.UEBERSCHUSS'),
         'GRENZE'      => array('W', 0,       200000,  'EB_FELD.GRENZE', 'EB_TITEL.GRENZE'),
         'LADESOLL'    => array('W', 0,       200000,  'EB_FELD.LADESOLL', 'EB_TITEL.LADESOLL'),
@@ -2002,7 +2019,7 @@ function eb_felder()
         /* GESTELLT ist die Summe dessen, was WIRKLICH an die Geraete ging.
          * Sie kann kleiner sein als GRENZE, wenn eine Spitzenleistung
          * deckelt - GRENZE allein sagt das nicht. */
-        'GESTELLT'    => array('W', 0,       200000,  'EB_FELD.GESTELLT', 'EB_TITEL.GESTELLT'),
+        'GESTELLT'    => array('W', -1,      200000,  'EB_FELD.GESTELLT', 'EB_TITEL.GESTELLT'),
         /* 1 der Speicher folgt dem Ladesoll, 0 er folgt nachweislich
          * nicht, -1 in diesem Durchlauf nicht geprueft. */
         'SPEICHER'    => array('',  -1,      1,       'EB_FELD.SPEICHER', 'EB_TITEL.SPEICHER'),
@@ -2291,16 +2308,20 @@ function eb_zeile($stand)
 {
     $w = function ($v) { return ($v === null || !is_numeric($v)) ? '-' : (string) (int) round($v); };
     $h = function ($k) use ($stand) { return isset($stand[$k]) ? $stand[$k] : null; };
+    /* Gruppe 3 (0.9.37, Entwurf eb 2.3/E2): ERZEUGUNG und GESTELLT ohne Wert -1 statt "-" (Loxone las "-"
+     * als 0, und 0 W Erzeugung ist eine falsche Aussage). NETZ und UEBERSCHUSS behalten "-" (E4: -1 W
+     * waere ein echter Wert), ebenso GRENZE und LADESOLL. */
+    $m1 = function ($v) { return ($v === null || !is_numeric($v)) ? '-1' : (string) (int) round($v); };
     $o = sprintf("EINSPEISEBREMSE;EIN=%d;NETZ=%s;ERZEUGUNG=%s;UEBERSCHUSS=%s;GRENZE=%s;LADESOLL=%s;NOTFALL=%d;WIRKUNG=%s;ALTER=%d;MESSALTER=%s;TAT=%d;GESTELLT=%s;SPEICHER=%d\n",
         empty($stand['ein']) ? 0 : 1,
-        $w($h('netz')), $w($h('erzeugung')), $w($h('ueberschuss_w')),
+        $w($h('netz')), $m1($h('erzeugung')), $w($h('ueberschuss_w')),
         $w($h('drossel_w')), $w($h('lade_soll_w')),
         empty($stand['notfall']) ? 0 : 1,
         $h('wirkung') === null ? '-' : (string) (int) $h('wirkung'),
         eb_alter(),
         $h('netz_alter') === null ? '-1' : (string) (int) round($h('netz_alter')),
         (int) $h('tat'),
-        $w($h('gestellt_w')),
+        $m1($h('gestellt_w')),
         $h('speicher_folgt') === null ? -1 : (int) $h('speicher_folgt'));
     /* "STATUS;" vorn: die Suchtexte lauten \i;NAME=\i, und bis 0.9.19
      * begann diese Zeile mit "ERSATZ=" - ohne Semikolon davor traf der
@@ -2491,7 +2512,8 @@ function eb_wert_pruefen($k, $w)
         return '';
     }
     if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
-                           'verlauf_ein', 'speicher_extern', 'haus_netz_ein', 'steller_von_ein'), true)) {
+                           'verlauf_ein', 'speicher_extern', 'haus_netz_ein', 'steller_von_ein',
+                           'befehle_mqtt_ein', 'befehle_mqtt_steuern'), true)) {
         return in_array($w, array(0, 1, '0', '1', true, false), true) ? '' : 'nur 0 oder 1';
     }
     if ($k === 'aktionstoken') {
@@ -2529,7 +2551,7 @@ function eb_wert_pruefen($k, $w)
     }
     if (in_array($k, array('ein', 'speicher_zuerst', 'mqtt_ein', 'bilanz_ein',
                            'verlauf_ein', 'speicher_extern', 'haus_netz_ein', 'steller_von_ein',
-                           'mqtt_topic'), true)) {
+                           'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'mqtt_topic'), true)) {
         return 'unbrauchbarer Wert';
     }
     return (is_scalar($w) || is_array($w)) ? '' : 'unbrauchbarer Wert';
@@ -2784,4 +2806,342 @@ function eb_wachposten()
         return eb_t('WACHE.FALSCH');
     }
     return '';
+}
+
+/* ==================================================================
+ * Gruppe 3 / MQTT (0.9.37): Namenstabelle, Befehle und Befehlsbruecke
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe3_eb.txt (E1-E13 nach Empfehlung, E11 nach
+ * ENTSCHEIDUNGEN_GRUPPE3_MQTT.md Punkt 4: Kennwort nie mehr als -P, siehe bin/eb_dienst.php),
+ * Bauvorschrift wz_bild/GRUPPE3_BAUVORSCHRIFT.md. Fuer Werte ueber das MQTT-Gateway gibt es
+ * KEINE Importvorlage: je Wert ein einfacher Virtueller Eingang, Name genau so, wie das Gateway
+ * ihn vergibt (Gruppe 1 Nachtrag 2). Die Namen kommen aus EINER Funktion
+ * (eb_mqtt_gateway_name()) fuer Namenstabelle, Hakenliste, Baustein-Liste und Selbstpruefung.
+ * Die HTTP-Vorlagen bleiben fuer bestehende Anlagen (Reiter "Einbindung in Loxone", zugeklappt).
+ * ================================================================== */
+
+/** Der Themenpraefix, gesaeubert wie in eb_config(). Liest nur (eb_config(false)). */
+function eb_mqtt_praefix()
+{
+    $c = eb_config(false);
+    return trim((string) $c['mqtt_topic'], '/');
+}
+
+/** Der Name, unter dem das MQTT-Gateway ein Thema an den Miniserver gibt: "/", Leerzeichen und "%"
+ *  werden "_" (Regeln/07, Umbenennungsregel beider Gateway-Fassungen). */
+function eb_mqtt_gateway_name($thema, $praefix = null)
+{
+    if ($praefix === null) { $praefix = eb_mqtt_praefix(); }
+    return str_replace(array('/', ' ', '%'), '_', trim((string) $praefix, '/') . '/' . (string) $thema);
+}
+
+/** Themen, die das Plugin sendet, die die Musterseite aber nicht braucht (Entwurf eb 2.4, E3, E5):
+ *  kein Haken unter V2. Alter in Sekunden entfaellt (Regeln/07), Texte sind technische Kennungen. */
+function eb_mqtt_nicht_im_muster()
+{
+    return array('anlass', 'alter', 'messalter', 'online', 'status/ts', 'speichersoll', 'speicherok',
+                 'stellerN/name', 'stellerN/watt', 'stellerN/ok', 'status/befehle');
+}
+
+/** Wertebereich je Thema (Einheit dahinter); Texte ohne Bereich. Erzeugung und gestellt seit 0.9.37
+ *  mit -1 = kein Wert (Entwurf eb 2.3); netz und ueberschuss ohne Platzhalter (E4). */
+function eb_mqtt_bereiche()
+{
+    return array(
+        'ein' => '0 … 1', 'netz' => '-200000 … 200000 W', 'erzeugung' => '-1 … 200000 W',
+        'ueberschuss' => '-200000 … 200000 W', 'grenze' => '0 … 200000 W', 'ladesoll' => '0 … 200000 W',
+        'anlass' => '', 'notfall' => '0 … 1', 'wirkung' => '-1 … 1', 'alter' => '0 … 86400 s',
+        'messalter' => '-1 … 86400 s', 'tat' => '0 … 3', 'gestellt' => '-1 … 200000 W',
+        'speicher' => '-1 … 1', 'speichersoll' => '0 … 200000 W', 'speicherok' => '0 … 1',
+        'online' => '0 … 1', 'status/ok' => '0 … 1', 'status/ts' => '0 … 2000000000 s',
+        'status/zaehler' => '0 … 999', 'ersatz' => '0 … 1', 'stufe' => '0 … 2', 'ziel' => '0 … 200000 W',
+        'stellerN/name' => '', 'stellerN/watt' => '0 … 200000 W', 'stellerN/ok' => '0 … 1',
+        'status/befehle' => '-1 … 1',
+    );
+}
+
+/**
+ * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 3) - EINE Liste fuer Tabelle, Hakenliste
+ * und Selbstpruefung. Reihenfolge wie eb_mqtt_themen(), dazu status/befehle (sendet die
+ * Befehlsbruecke). Je Zeile: thema, name, bedeutung, art (zahl|text), bereich, im_muster, haken.
+ * $praefix: fuer die Gegenprobe; sonst der eingestellte.
+ */
+function eb_mqtt_namen($praefix = null)
+{
+    if ($praefix === null) { $praefix = eb_mqtt_praefix(); }
+    $themen = eb_mqtt_themen();
+    $themen['status/befehle'] = 'BEFEHL.TH_STATUS';
+    $ohne = eb_mqtt_nicht_im_muster();
+    $ber = eb_mqtt_bereiche();
+    $aus = array();
+    foreach ($themen as $t => $schl) {
+        $text = in_array($t, array('anlass', 'stellerN/name'), true);
+        $im = !in_array($t, $ohne, true);
+        $aus[] = array('thema' => $t, 'name' => eb_mqtt_gateway_name($t, $praefix),
+                       'bedeutung' => eb_klartext($schl), 'art' => $text ? 'text' : 'zahl',
+                       'bereich' => isset($ber[$t]) ? $ber[$t] : '',
+                       'im_muster' => $im, 'haken' => $im || $t === 'status/befehle');
+    }
+    return $aus;
+}
+
+/** Hakenliste fuer Gateway V2 (Entwurf eb 2.4): 16 Zahlen der Musterseite und status/befehle, 17 Haken.
+ *  Kein Thema braucht "Noncached" oder "Zuruecksetzen nach Senden". Je Zeile array(Thema voll, Name,
+ *  Bedeutung, art). */
+function eb_mqtt_hakenliste()
+{
+    $p = eb_mqtt_praefix();
+    $aus = array();
+    foreach (eb_mqtt_namen($p) as $z) {
+        if ($z['haken']) { $aus[] = array($p . '/' . $z['thema'], $z['name'], $z['bedeutung'], $z['art']); }
+    }
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Namenstabelle" (Entwurf eb 2.4): jeder Name der Tabelle ist ein Thema aus eb_mqtt_themen()
+ * (dazu status/befehle der Bruecke) unter dem eingestellten Praefix, und jedes Thema steht in der Tabelle.
+ * Die Gegenseite wird OHNE eb_mqtt_gateway_name() gebildet. $namen: fuer die Gegenprobe (ein falsch
+ * geschriebener Name muss rot werden). Rueckgabe array(1|0, Text).
+ */
+function eb_mqtt_namen_probe($namen = null)
+{
+    $p = eb_mqtt_praefix();
+    if ($namen === null) {
+        $namen = array();
+        foreach (eb_mqtt_namen($p) as $z) { $namen[] = $z['name']; }
+    }
+    $soll = array();
+    foreach (array_merge(array_keys(eb_mqtt_themen()), array('status/befehle')) as $t) {
+        $soll[] = strtr($p . '/' . $t, array('/' => '_', ' ' => '_', '%' => '_'));
+    }
+    $nur_tabelle = array_values(array_diff($namen, $soll));
+    $nur_themen = array_values(array_diff($soll, $namen));
+    if ($nur_tabelle || $nur_themen) {
+        return array(0, sprintf(eb_klartext('SP.NAMEN_NEIN'),
+            $nur_tabelle ? implode(', ', $nur_tabelle) : '-', $nur_themen ? implode(', ', $nur_themen) : '-'));
+    }
+    return array(1, sprintf(eb_klartext('SP.NAMEN_JA'), count($namen)));
+}
+
+/* ---------------- Befehle: EINE Funktion fuer Endpunkt und Befehlsbruecke ----------------
+ * Bis 0.9.36 stand diese Pruefung in webfrontend/html/index.php. Seit 0.9.37 rufen der HTTP-Endpunkt
+ * (Quelle 'http', Antwort unveraendert) und die Befehlsbruecke (Quelle 'mqtt', bin/befehle_zuordnung.php)
+ * dieselbe Funktion: Wertpruefung, Maengelpruefung, X-7 (gleicher Zustand -> nichts schreiben),
+ * eb_config_feld_setzen() unter Sperre, Zuruecklesen. Grundsatz bleibt: von aussen nur ein/aus und eine
+ * STUFE, nie ein Wattwert. Die Token-Pruefung bleibt im Endpunkt; auf dem MQTT-Weg ersetzen sie die
+ * Anmeldung am Broker und die beiden Haken (Entwurf gemeinsam E13). */
+
+/**
+ * Einen Befehl ausfuehren. $aktion 'ein' oder 'stufe', $roh der Wert als Text ("0"/"1" bzw. "0"/"1"/"2").
+ * Rueckgabe array(HTTP-Code, Antworttext wie der Endpunkt ihn ausgibt, Grund: '' | WERT | MAENGEL |
+ * SPEICHERN | AKTION).
+ */
+function eb_befehl_ausfuehren($aktion, $roh, $quelle = 'http')
+{
+    $roh = trim((string) $roh);
+    $cfg = eb_config(false);
+    $weg = ($quelle === 'mqtt') ? 'ueber MQTT' : 'ueber den Endpunkt';
+    if ($aktion === 'ein') {
+        /* Abweisen statt zurechtbiegen: (int)"aus" waere 0, und die Regelung
+         * ginge auf einen Tippfehler hin aus, ohne dass jemand es merkt. */
+        if (!in_array($roh, array('0', '1'), true)) {
+            return array(400, "FEHLER;OK=0;GRUND=WERT\n"
+                . "wert muss 0 oder 1 sein, empfangen wurde: " . substr($roh, 0, 40) . "\n", 'WERT');
+        }
+        $neu = ($roh === '1') ? 1 : 0;
+        /* Dieselbe Pruefung wie in der Oberflaeche (seit 0.9.27 sperren nur die Maengel aus
+         * eb_maengel_sperrend()). Fail closed: im Zweifel nicht einschalten. */
+        if ($neu === 1) {
+            $mangel = eb_maengel_sperren(eb_maengel($cfg));
+            if ($mangel) {
+                $t = "FEHLER;OK=0;GRUND=MAENGEL;EIN=" . (int) $cfg['ein'] . "\n";
+                foreach ($mangel as $k) { $t .= eb_klartext($k) . "\n"; }
+                return array(409, $t, 'MAENGEL');
+            }
+        }
+        $gleich = ((int) $cfg['ein'] === $neu);     // X-7
+        if (!$gleich) {
+            /* EIN Feld, unter Sperre (eb_config_feld_setzen). */
+            if (!eb_config_feld_setzen('ein', $neu)) {
+                return array(500, "FEHLER;OK=0;GRUND=SPEICHERN\n", 'SPEICHERN');
+            }
+            eb_log('Regelung ' . $weg . ' ' . ($neu ? 'eingeschaltet' : 'ausgeschaltet') . '.');
+        }
+        /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei. */
+        return array(200, "EIN=" . (int) eb_config(false)['ein'] . ($gleich ? ';UNVERAENDERT=1' : '') . "\n", '');
+    }
+    if ($aktion === 'stufe') {
+        /* Gewaehlt wird eine STUFE, nie ein Wert - im schlimmsten Fall die schaerfste der drei, die der
+         * Betreiber selbst eingetragen hat. */
+        if (!in_array($roh, array('0', '1', '2'), true)) {
+            return array(400, "FEHLER;OK=0;GRUND=WERT\n"
+                . "wert muss 0, 1 oder 2 sein, empfangen wurde: " . substr($roh, 0, 40) . "\n", 'WERT');
+        }
+        $neu = (int) $roh;
+        $gleich = ((int) $cfg['stufe'] === $neu);     // X-7
+        if (!$gleich) {
+            if (!eb_config_feld_setzen('stufe', $neu)) {
+                return array(500, "FEHLER;OK=0;GRUND=SPEICHERN\n", 'SPEICHERN');
+            }
+            eb_log('Zielstufe ' . $weg . ' auf ' . $neu . ' gestellt.');
+        }
+        $frisch = eb_config(false);
+        return array(200, "STUFE=" . (int) $frisch['stufe'] . ";ZIEL=" . (int) eb_ziel_w($frisch)
+            . ($gleich ? ';UNVERAENDERT=1' : '') . "\n", '');
+    }
+    return array(400, "FEHLER;OK=0;GRUND=AKTION_UNBEKANNT\n", 'AKTION');
+}
+
+/** Die Rueckgabe von eb_befehl_ausfuehren() fuer die Bruecke: array(bool, Grund). 200 heisst angenommen,
+ *  auch mit UNVERAENDERT=1; sonst der Grund (MAENGEL, WERT, SPEICHERN) in die Quittung. */
+function eb_befehl_bruecke($r)
+{
+    if (is_array($r) && isset($r[0]) && (int) $r[0] === 200) { return array(true, ''); }
+    $g = (is_array($r) && isset($r[2]) && $r[2] !== '') ? (string) $r[2] : 'FEHLER';
+    return array(false, $g);
+}
+
+/** Einstellungen fuer die Zuordnung (Entwurf gemeinsam 2.5): Praefix aus mqtt_topic, annehmen = Haken
+ *  "Befehle ueber MQTT annehmen" UND MQTT an, eingreifend = zweiter Haken "Bremse ueber MQTT steuern". */
+function eb_befehle_einstellungen()
+{
+    $c = eb_config(false);
+    $mqtt = !empty($c['mqtt_ein']);
+    return array('praefix' => trim((string) $c['mqtt_topic'], '/'),
+                 'annehmen' => !empty($c['befehle_mqtt_ein']) && $mqtt,
+                 'eingreifend' => !empty($c['befehle_mqtt_steuern']), 'mqtt_ein' => $mqtt);
+}
+
+/** Der Befehl, wie Loxone ihn sendet (Liste "Einspeisebremse" #38/#40/#42): Puls mit fester 1, Stufe
+ *  mit <v.0>. Unter dem eingestellten Praefix; dieselbe Form wie bb_loxone_befehl() der Bruecke. */
+function eb_befehl_loxone($name)
+{
+    $wert = ($name === 'stufe') ? '<v.0>' : '1';
+    return 'publish ' . eb_mqtt_praefix() . '/befehl/' . $name . ' ' . $wert;
+}
+
+/* ---------------- Befehlsbruecke (bin/befehlsbruecke.php, Stammfassung Werkzeuge/gemeinsam) ---------------- */
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, im Archiv neben webfrontend. */
+function eb_bruecke_datei()
+{
+    $p = eb_paths();
+    $kand = array();
+    if ($p['home'] !== '') { $kand[] = $p['bindir'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function eb_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = eb_bruecke_datei();
+    if ($f === '') { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Direktstart bzw. -stopp beim Speichern des Reiters MQTT (Bauart fer_bruecke_schalten(), mo_bruecke_schalten()):
+ * der Waechter im Minutentakt startet nach einem Start hoechstens alle 600 s neu. befehlsbruecke.sh start startet
+ * nur nach --soll, nie als root, nie waehrend eines Updates, nie doppelt.
+ * Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl', Ausgabe).
+ */
+function eb_bruecke_schalten()
+{
+    if (!eb_bruecke_laden()) { return array('', ''); }
+    $p = bb_pfade();
+    if (!$p) { return array('', ''); }
+    $e = eb_befehle_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft) { return array('', ''); }
+        list($rc, $aus) = bb_sh($p, 'start');
+        if ($rc === 0 && bb_dienste()) {
+            eb_log('Befehlsbruecke beim Speichern gestartet.');
+            return array('ein', $aus);
+        }
+        eb_log('Befehlsbruecke: Start beim Speichern gescheitert (Rueckgabe ' . (int) $rc . '): ' . substr($aus, 0, 200));
+        return array('start_fehl', $aus);
+    }
+    if (!$laeuft) { return array('', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    if ($rc === 0 && !bb_dienste()) {
+        eb_log('Befehlsbruecke beim Speichern angehalten.');
+        return array('aus', $aus);
+    }
+    return array('stop_fehl', $aus);
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage) oder null. */
+function eb_befehle_liste()
+{
+    if (!eb_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/** Vorlage "Einspeisebremse MQTT-Befehle" (bb_vorlage()): eigener Virtueller Ausgang an den UDP-Eingang des
+ *  Gateways. Rueckgabe array(name, inhalt) oder null. */
+function eb_befehle_vorlage()
+{
+    $l = eb_befehle_liste();
+    if ($l === null) { return null; }
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-]/', '', preg_replace('/:\d+\z/', '', (string) $_SERVER['HTTP_HOST']))
+        : (gethostname() ?: 'loxberry');
+    $mz = eb_mqtt_zustand();
+    $port = (int) $mz['udpport'];
+    return array('VQ_einspeisebremse_mqtt.xml', bb_vorlage($l, $host !== '' ? $host : 'loxberry', $port > 0 ? $port : 11884));
+}
+
+/** Zeile "Laeuft die Befehlsbruecke?" (Entwurf gemeinsam 2.11): array(1|0|-1, Text). Gemessen wird das
+ *  Erzeugnis (zustand.json: ts, abo, Zaehler) und ob ein Dienst argumentweise laeuft - wie der Waechter. */
+function eb_pruef_bruecke()
+{
+    if (!eb_bruecke_laden()) { return array(0, eb_klartext('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(0, sprintf(eb_klartext('BEFEHL.P_DEFEKT'), $fehler)); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array(0, sprintf(eb_klartext('BEFEHL.P_DEFEKT'), $f[0])); }
+    $c = eb_config(false);
+    if (empty($c['befehle_mqtt_ein'])) { return array(-1, eb_klartext('BEFEHL.P_AUS')); }
+    if (empty($c['mqtt_ein'])) { return array(-1, eb_klartext('BEFEHL.P_MQTT_AUS')); }
+    if (!bb_pfade()) { return array(-1, eb_klartext('BEFEHL.P_ARCHIV')); }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) { return array(0, eb_klartext('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) { return array(0, sprintf(eb_klartext('BEFEHL.P_HAENGT'), (int) $alter)); }
+    if (empty($zu['abo'])) {
+        return array(0, sprintf(eb_klartext('BEFEHL.P_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : ''));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $t = sprintf(eb_klartext('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(eb_klartext('BEFEHL.P_LETZTER'), (string) $zu['letzter']['name'],
+                            (string) $zu['letzter']['ergebnis'], max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . eb_klartext('BEFEHL.P_VERWORFEN'); }
+    return array(1, $t);
+}
+
+/** Die Zeilen von "befehlsbruecke.php --pruefen" (bb_pruefen()) fuer den Reiter Test; leer ohne Bruecke. */
+function eb_bruecke_pruefzeilen()
+{
+    if (!eb_bruecke_laden()) { return array(); }
+    ob_start();
+    bb_pruefen();
+    $aus = (string) ob_get_clean();
+    return array_values(array_filter(explode("\n", $aus), 'strlen'));
 }

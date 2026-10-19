@@ -69,7 +69,7 @@ $eb_eingaben_post = null;     // X-2: die Eingaben eines beanstandeten Formulars
 function eb_eingabe_felder($formular)
 {
     if ($formular === 'mqtt') {
-        return array('mqtt_ein', 'mqtt_topic', 'haus_netz_ein');
+        return array('mqtt_ein', 'mqtt_topic', 'haus_netz_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern');
     }
     if ($formular === 'vorlage') {
         return array('vorlage_quellen', 'vq_ziel', 'vq_wert');
@@ -267,6 +267,21 @@ if ($eb_post && isset($_POST['vorlage'])) {
         echo $eb_inhalt;
         exit;
     }
+}
+
+/* ---------------- Vorlage der MQTT-Befehle (Gruppe 3 / MQTT, 0.9.37) ----------------
+ * Eigener Ausgang "Einspeisebremse MQTT-Befehle" aus der Tabelle der Befehlsbruecke (bb_vorlage(),
+ * eb_befehle_vorlage()). Liest nur. */
+if ($eb_post && isset($_POST['vorlage_bb'])) {
+    $eb_bv = eb_befehle_vorlage();
+    if (is_array($eb_bv)) {
+        header('Content-Type: application/xml; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $eb_bv[0] . '"');
+        echo $eb_bv[1];
+        exit;
+    }
+    $eb_fehler[] = eb_t('BEFEHL.FEHLER_VORLAGE');
+    $eb_tab = 'tab-loxone';
 }
 
 /* ---------------- Regelung ein- oder ausschalten ---------------- */
@@ -654,6 +669,9 @@ if ($eb_post && isset($_POST['speichern'])) {
         $eb_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
         /* Energie-1 C4: haus/energie/netz_w und ts (ab Werk aus, nie retained). */
         $eb_cfg['haus_netz_ein'] = !empty($_POST['haus_netz_ein']) ? 1 : 0;
+        /* Gruppe 3 / MQTT (0.9.37): die beiden Haken der Befehlsbruecke (ab Werk aus). */
+        $eb_cfg['befehle_mqtt_ein'] = !empty($_POST['befehle_mqtt_ein']) ? 1 : 0;
+        $eb_cfg['befehle_mqtt_steuern'] = !empty($_POST['befehle_mqtt_steuern']) ? 1 : 0;
 
         /* Weder leeren noch stillschweigend kleinschreiben. An einem
          * Themenpraefix haengen die virtuellen Eingaenge im Miniserver und
@@ -701,6 +719,15 @@ if ($eb_post && isset($_POST['speichern'])) {
             $eb_meldungen[] = eb_t('ALLG.GESPEICHERT');
             eb_log('Einstellungen gespeichert.');
             eb_abo_datei($eb_cfg['mqtt_topic'], true);
+            /* Gruppe 3 / MQTT (0.9.37): die Befehlsbruecke sofort schalten - der Waechter im Minutentakt
+             * startet nach einem Start hoechstens alle 600 s neu (Stammfassung). */
+            if ($eb_formular === 'mqtt') {
+                list($eb_bart, $eb_baus) = eb_bruecke_schalten();
+                if ($eb_bart === 'ein') { $eb_meldungen[] = eb_t('BEFEHL.M_EIN'); }
+                elseif ($eb_bart === 'aus') { $eb_meldungen[] = eb_t('BEFEHL.M_AUS'); }
+                elseif ($eb_bart === 'start_fehl') { $eb_meldungen[] = sprintf(eb_t('BEFEHL.M_START_FEHL'), eb_e($eb_baus)); }
+                elseif ($eb_bart === 'stop_fehl') { $eb_meldungen[] = sprintf(eb_t('BEFEHL.M_STOP_FEHL'), eb_e($eb_baus)); }
+            }
         } else {
             $eb_fehler[] = eb_t('FEHLER.SPEICHERN');
         }
@@ -975,6 +1002,9 @@ if ($eb_rahmen) {
 /* Welle Bild 10 VOLL: Schritte und Hinweise je Baustein-Liste (wie Welle 9 VOLL). */
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 3 / MQTT (0.9.37): Kopierknopf der Namenstabelle, zugeklappte Abschnitte. */
+.sm-wrap button.sm-kopie { font-size: 0.8em; padding: 1px 6px; margin-left: 4px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; color: #333; cursor: pointer; }
+.sm-wrap details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8px 0 6px; }
 
 </style>
 
@@ -1393,6 +1423,18 @@ if ($eb_sich_warn) { ?>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= eb_h('mqtt_ein', $eb_cfg['mqtt_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('MQTT.EIN')) ?></label>
 </div>
+<?php /* Gruppe 3 / MQTT (0.9.37, Entwurf eb 3.3): die beiden Haken der Befehlsbruecke, ab Werk aus. */ ?>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= eb_m('befehle_mqtt_ein') ?><?= eb_h('befehle_mqtt_ein', $eb_cfg['befehle_mqtt_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('BEFEHL.HAKEN_EIN')) ?></label>
+  <p class="sm-hilfe"><?= eb_t('BEFEHL.HAKEN_HILFE') ?></p>
+<?php if (empty($eb_cfg['mqtt_ein'])) { ?>
+  <p class="sm-hilfe"><?= eb_t('BEFEHL.HAKEN_MQTT_AUS') ?></p>
+<?php } ?>
+</div>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="befehle_mqtt_steuern" value="1"<?= eb_m('befehle_mqtt_steuern') ?><?= eb_h('befehle_mqtt_steuern', $eb_cfg['befehle_mqtt_steuern']) ? ' checked' : '' ?>> <?= eb_e(eb_t('BEFEHL.HAKEN_STEUERN')) ?></label>
+  <p class="sm-hilfe"><?= eb_t('BEFEHL.HAKEN_STEUERN_HILFE') ?></p>
+</div>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="haus_netz_ein" value="1"<?= eb_m('haus_netz_ein') ?><?= eb_h('haus_netz_ein', $eb_cfg['haus_netz_ein']) ? ' checked' : '' ?>> <?= eb_e(eb_t('MQTT.HAUS_EIN')) ?></label>
   <p class="sm-hilfe"><?= eb_t('MQTT.HAUS_EIN_HILFE') ?></p>
@@ -1418,6 +1460,10 @@ if ($eb_sich_warn) { ?>
     <td><?= eb_e(eb_t($eb_schl)) ?></td>
     <td><?= eb_e(eb_t(eb_mqtt_retained($eb_k) ? 'ALLG.JA' : 'ALLG.NEIN')) ?></td></tr>
 <?php } ?>
+<?php /* Gruppe 3 / MQTT (0.9.37): das Lebenszeichen der Befehlsbruecke (bb_status_senden(), nie retained). */ ?>
+<tr><td><span class="sm-mono"><?= eb_e($eb_cfg['mqtt_topic'] . '/status/befehle') ?></span></td>
+    <td><?= eb_e(eb_t('BEFEHL.TH_STATUS')) ?></td>
+    <td><?= eb_e(eb_t('ALLG.NEIN')) ?></td></tr>
 </table>
 <p class="sm-hilfe"><?= eb_t('MQTT.STELLERN_HILFE') ?></p>
 
@@ -1461,22 +1507,165 @@ list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $eb_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
+<?php /* Gruppe 3 / MQTT (0.9.37; Entwurf eb 2.5, Bauvorschrift Gruppe 1 Nachtrag 2): MQTT ist der Weg des
+   LoxBerry-Plugins Musterprojekts. Schritt 1 MQTT einschalten, Schritt 2 das Gateway nach seiner Fassung (V1: das
+   Plugin bringt sein Abo selbst mit; V2 und "nicht feststellbar": Hakenliste aus eb_mqtt_hakenliste()), Schritt 3 die
+   Namenstabelle (KEINE Importvorlage fuer Werte), Schritt 4 die Ausfallerkennung am Lebenszeichen status/zaehler,
+   Schritt 5 die Befehle aus der Befehlsbruecke (bb_liste(), EINE Quelle mit der Vorlage "Einspeisebremse
+   MQTT-Befehle"), Schritt 6 die beiden Musterseiten, Schritt 7 die Gegenprobe. Der Weg ueber HTTP (bis 0.9.36 die
+   Schritte 1 bis 7 dieses Reiters) steht darunter, zugeklappt. Alle Namen aus eb_mqtt_gateway_name(). */
+$eb_gpraefix = eb_mqtt_praefix();
+$eb_gwf2 = (int) $eb_mqtt['fassung'];
+$eb_namen = eb_mqtt_namen();
+$eb_haken = eb_mqtt_hakenliste();
+$eb_bliste = eb_befehle_liste();
+list(, $eb_abo_da2) = eb_abo_datei($eb_cfg['mqtt_topic']); ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= eb_t('LEGENDE.TECHNIK_XML') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= eb_t('LEGENDE.AKTION_TOKEN') ?></span>
+</div>
 <h2><?= eb_e(eb_t('LOX.H_SCHRITTE')) ?></h2>
-<div class="sm-step"><?= eb_t('LOX.S1') ?></div>
+<div class="sm-step"><?= eb_t('LOX.M_S1') ?>
+<?php if (empty($eb_cfg['mqtt_ein'])) { ?>
+<div class="sm-warnung"><?= eb_t('LOX.M_S1_AUS') ?></div>
+<?php } ?>
+</div>
+
+<div class="sm-step"><?= eb_t('LOX.M_S2') ?>
+<p><span class="sm-mono"><?= eb_e($eb_gpraefix) ?>/#</span></p>
+<?php if ($eb_gwf2 <= 1) { /* V1 oder nicht feststellbar: das Abo (eb_abo_datei(), wie im Reiter MQTT) */ ?>
+<?php if ($eb_abo_da2) { ?>
+<div class="sm-hinweis"><?= eb_t('MQTT.ABO_MITGELIEFERT') ?></div>
+<?php } else { ?>
+<div class="sm-warnung"><?= eb_t('MQTT.ABO_PFLICHT') ?></div>
+<?php } ?>
+<?php } ?>
+<?php if ($eb_gwf2 !== 1) { /* V2 oder nicht feststellbar: die Hakenliste, aufgeklappt */ ?>
+<div class="sm-hinweis"><?= sprintf(eb_t('LOX.M_S2_V2'), '<span class="sm-mono">' . eb_e($eb_gpraefix) . '</span>') ?></div>
+<details open><summary><?= eb_e(sprintf(eb_t('LOX.M_HAKEN_AUF'), count($eb_haken))) ?></summary>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= eb_e(eb_t('LOX.M_T_THEMA')) ?></th><th><?= eb_e(eb_t('LOX.M_T_NAME')) ?></th><th><?= eb_e(eb_t('LOX.M_T_BEDEUTUNG')) ?></th><th><?= eb_e(eb_t('LOX.M_T_ART')) ?></th></tr>
+<?php foreach ($eb_haken as $eb_hi => $eb_hz) { ?>
+<tr><td><?= (int) $eb_hi + 1 ?></td><td><span class="sm-mono"><?= eb_e($eb_hz[0]) ?></span></td><td><span class="sm-mono"><?= eb_e($eb_hz[1]) ?></span></td><td><?= eb_e($eb_hz[2]) ?></td><td><?= eb_e(eb_t($eb_hz[3] === 'text' ? 'LOX.M_ART_TEXT' : 'LOX.M_ART_ZAHL')) ?></td></tr>
+<?php } ?>
+</table></div>
+</details>
+<p class="sm-hilfe"><?= eb_t('LOX.M_NONCACHED') ?></p>
+<?php if ($eb_gwf2 === 0) { ?>
+<p class="sm-hilfe"><?= eb_t('MQTT.ABO_UNBEKANNT') ?></p>
+<?php } ?>
+<?php } ?>
+<p class="sm-hilfe"><?= eb_t('LOX.M_RECONNECT') ?></p>
+</div>
+
+<div class="sm-step"><?= eb_t('LOX.M_S3') ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= eb_e(eb_t('LOX.M_T_NAME')) ?></th><th><?= eb_e(eb_t('LOX.M_T_THEMA')) ?></th><th><?= eb_e(eb_t('LOX.M_T_BEDEUTUNG')) ?></th><th><?= eb_e(eb_t('LOX.M_T_BEREICH')) ?></th><th><?= eb_e(eb_t('LOX.M_T_ART')) ?></th><th><?= eb_e(eb_t('LOX.M_T_MUSTER')) ?></th></tr>
+<?php foreach ($eb_namen as $eb_ni => $eb_nz) { ?>
+<tr><td><?= (int) $eb_ni + 1 ?></td><td><span class="sm-mono"><?= eb_e($eb_nz['name']) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= eb_e($eb_nz['name']) ?>"><?= eb_e(eb_t('LOX.M_KOPIEREN')) ?></button></td><td><span class="sm-mono"><?= eb_e($eb_gpraefix . '/' . $eb_nz['thema']) ?></span></td><td><?= eb_e($eb_nz['bedeutung']) ?></td><td><?= $eb_nz['art'] === 'text' ? '&ndash;' : eb_e($eb_nz['bereich']) ?></td><td><?= eb_e(eb_t($eb_nz['art'] === 'text' ? 'LOX.M_ART_TEXT' : 'LOX.M_ART_ZAHL')) ?></td><td><?= eb_e(eb_t($eb_nz['im_muster'] ? 'ALLG.JA' : 'ALLG.NEIN')) ?></td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= eb_t('MQTT.STELLERN_HILFE') ?></p>
+<p class="sm-hilfe"><?= eb_t('LOX.M_S3_DIGITAL') ?></p>
+<p class="sm-hilfe"><?= eb_t('LOX.M_S3_RECHTE') ?></p>
+<p class="sm-hilfe"><?= eb_t('LOX.M_S3_MUSTER') ?></p>
+<p class="sm-hilfe"><?= eb_t('LOX.M_S3_PRAEFIX') ?></p>
+<p class="sm-hilfe"><?= eb_t('LOX.M_S3_NETZ') ?></p>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(eb_t('LOX.M_KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
+</div>
+
+<div class="sm-step"><?= sprintf(eb_t('LOX.M_S4'), '<span class="sm-mono">' . eb_e(eb_mqtt_gateway_name('status/zaehler')) . '</span>',
+                                 '<span class="sm-mono">' . eb_e(eb_mqtt_gateway_name('status/ok')) . '</span>') ?></div>
+
+<div class="sm-step"><?= eb_t('LOX.M_S5') ?>
+<?php if ($eb_bliste === null) { ?>
+<div class="sm-warnung"><?= eb_t('LOX.M_S5_KEINE') ?></div>
+<?php } else { ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?= eb_e(eb_t('BEFEHL.T_BEDEUTUNG')) ?></th><th><?= eb_e(eb_t('BEFEHL.T_TITEL')) ?></th><th><?= eb_e(eb_t('BEFEHL.T_THEMA')) ?></th><th><?= eb_e(eb_t('BEFEHL.T_LOXONE')) ?></th><th><?= eb_e(eb_t('BEFEHL.T_EINGREIFEND')) ?></th><th><?= eb_e(eb_t('BEFEHL.T_SPERRE')) ?></th></tr>
+<?php foreach ($eb_bliste['befehle'] as $eb_bb) { if ($eb_bb['muster']) { continue; } ?>
+<tr><td><?= eb_e(eb_t($eb_bb['kachel'])) ?></td><td><?= eb_e($eb_bb['titel']) ?></td><td><span class="sm-mono"><?= eb_e($eb_bb['thema']) ?></span></td><td><span class="sm-mono"><?= eb_e($eb_bb['loxone']['ein']) ?></span></td><td><?= eb_e(eb_t($eb_bb['eingreifend'] ? 'ALLG.JA' : 'ALLG.NEIN')) ?></td><td><?= (int) $eb_bb['sperre_s'] ?> s</td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= eb_e(eb_t('BEFEHL.T_QUITTUNG')) ?>: <span class="sm-mono"><?= eb_e($eb_gpraefix) ?>/befehl/…/quittung</span> – <?= eb_e(eb_t('BEFEHL.Q_AUSGEFUEHRT')) ?></p>
+<p class="sm-hilfe"><?= eb_t('LOX.M_S5_SPERRE') ?></p>
+<p class="sm-hilfe"><?= eb_t('LOX.M_S5_NICHTS') ?></p>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post">
+  <?php echo eb_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_bb" value="1"><?= eb_e(eb_t('BEFEHL.K_VORLAGE')) ?></button>
+</form>
+</div>
+<p class="sm-hilfe"><?= eb_t('LOX.M_S5_VORLAGE') ?></p>
+<?php } ?>
+</div>
+
+<div class="sm-step"><?= eb_t('LOX.S6') ?></div>
+
+<h2><?= eb_e(eb_t('LOX.H_BAUSTEINE')) ?></h2>
+<?php
+/* Welle Bild 10 VOLL (0.9.34): zwei Seiten aus dem LoxBerry-Plugins Musterprojekt, beide immer
+ * sichtbar - je Ueberschrift, Kasten mit Schritten, Tabelle (eb_baustein_tabelle(), Texte aus
+ * [BAUSTEIN]), Hinweise, Bild und Link. Bis 0.9.33: Sammelstoerung (15 Zeilen) und
+ * "Speicher extern gefuehrt" (8 Zeilen). */
+foreach (array(
+    array('W', 'LOX.BL_WERTE', eb_bausteine_werte(), 'einbindung_loxone_werte.png', 'Einspeisebremse'),
+    array('SP', 'LOX.BL_SPEICHER', eb_bausteine_speicher(), 'einbindung_loxone_speicher.png', 'Einspeisebremse Speicher'),
+) as $eb_bs) { ?>
+<h3><?= eb_e(eb_t($eb_bs[1])) ?></h3>
+<div class="sm-hinweis"><b><?= eb_e(eb_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach (eb_bausteine_schritte($eb_bs[0]) as $eb_bx) { ?>
+<li><?= $eb_bx ?></li>
+<?php } ?>
+</ol></div>
+<?= eb_baustein_tabelle($eb_bs[2]) /* X-8/A4: Tabelle aus dem Code, Texte aus [BAUSTEIN] */ ?>
+<div class="sm-warnung"><b><?= eb_e(eb_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach (eb_bausteine_hinweise($eb_bs[0]) as $eb_bx) { ?>
+<li><?= $eb_bx ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= eb_e($eb_bs[3]) ?>" alt="<?= eb_e(sprintf(eb_t('LOX.BILD_ALT'), $eb_bs[4])) ?>" loading="lazy">
+<figcaption><?= eb_e(sprintf(eb_t('LOX.BILD_UNTERSCHRIFT'), $eb_bs[4])) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= eb_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
+<div class="sm-step"><?= sprintf(eb_t('LOX.M_S7'), '<span class="sm-mono">' . eb_e(eb_mqtt_gateway_name('status/zaehler')) . '</span>',
+                                 '<span class="sm-mono">' . eb_e(eb_mqtt_gateway_name('ein')) . '</span>') ?></div>
+
+<?php /* Gruppe 3 / MQTT (0.9.37): der Weg ueber HTTP (bis 0.9.36 der Weg dieses Plugins) fuer bestehende
+         Anlagen, zugeklappt; Inhalt wie bis 0.9.36, die Schritte ohne Nummer. */ ?>
+<details class="sm-step"><summary><b><?= eb_e(eb_t('LOX.H_HTTP')) ?></b></summary>
+<p class="sm-hilfe"><?= eb_t('LOX.HTTP_ERKLAERUNG') ?></p>
 <div class="sm-step"><?= eb_t('LOX.S2') ?></div>
 <div class="sm-step"><?= eb_t('LOX.S3') ?></div>
 <div class="sm-step"><?= eb_t('LOX.S4') ?></div>
 <div class="sm-step"><?= eb_t('LOX.S5') ?></div>
-<div class="sm-step"><?= eb_t('LOX.S6') ?></div>
 <div class="sm-step"><?= eb_t('LOX.S7') ?></div>
 
 <h2><?= eb_e(eb_t('LOX.H_VORLAGE')) ?></h2>
 <div class="sm-step"><?= eb_t('LOX.ERKLAERUNG') ?></div>
 <div class="sm-step"><?= eb_t('LOX.ERKLAERUNG_VQ') ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= eb_t('LEGENDE.TECHNIK_XML') ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= eb_t('LEGENDE.AKTION_TOKEN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <?php echo eb_fmt(); ?>
@@ -1519,37 +1708,7 @@ list(, $eb_abo_da) = eb_abo_datei($eb_cfg['mqtt_topic']);
     <td><?= eb_e(eb_t($eb_info[3])) ?><?= $eb_info[0] !== '' ? ' [' . eb_e($eb_info[0]) . ']' : '' ?></td></tr>
 <?php } ?>
 </table>
-
-<h2><?= eb_e(eb_t('LOX.H_BAUSTEINE')) ?></h2>
-<?php
-/* Welle Bild 10 VOLL (0.9.34): zwei Seiten aus dem LoxBerry-Plugins Musterprojekt, beide immer
- * sichtbar - je Ueberschrift, Kasten mit Schritten, Tabelle (eb_baustein_tabelle(), Texte aus
- * [BAUSTEIN]), Hinweise, Bild und Link. Bis 0.9.33: Sammelstoerung (15 Zeilen) und
- * "Speicher extern gefuehrt" (8 Zeilen). */
-foreach (array(
-    array('W', 'LOX.BL_WERTE', eb_bausteine_werte(), 'einbindung_loxone_werte.png', 'Einspeisebremse'),
-    array('SP', 'LOX.BL_SPEICHER', eb_bausteine_speicher(), 'einbindung_loxone_speicher.png', 'Einspeisebremse Speicher'),
-) as $eb_bs) { ?>
-<h3><?= eb_e(eb_t($eb_bs[1])) ?></h3>
-<div class="sm-hinweis"><b><?= eb_e(eb_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
-<ol class="sm-schritte">
-<?php foreach (eb_bausteine_schritte($eb_bs[0]) as $eb_bx) { ?>
-<li><?= $eb_bx ?></li>
-<?php } ?>
-</ol></div>
-<?= eb_baustein_tabelle($eb_bs[2]) /* X-8/A4: Tabelle aus dem Code, Texte aus [BAUSTEIN] */ ?>
-<div class="sm-warnung"><b><?= eb_e(eb_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
-<ul class="sm-schritte">
-<?php foreach (eb_bausteine_hinweise($eb_bs[0]) as $eb_bx) { ?>
-<li><?= $eb_bx ?></li>
-<?php } ?>
-</ul></div>
-<figure class="sm-bild">
-<img src="<?= eb_e($eb_bs[3]) ?>" alt="<?= eb_e(sprintf(eb_t('LOX.BILD_ALT'), $eb_bs[4])) ?>" loading="lazy">
-<figcaption><?= eb_e(sprintf(eb_t('LOX.BILD_UNTERSCHRIFT'), $eb_bs[4])) ?></figcaption>
-</figure>
-<p class="sm-hilfe"><?= eb_t('LOX.MUSTERPROJEKT') ?></p>
-<?php } ?>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->

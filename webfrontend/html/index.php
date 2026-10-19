@@ -89,79 +89,17 @@ if (!in_array($eb_aktion, array('status', 'json', 'ein', 'stufe'), true)) {
     exit;
 }
 
-if ($eb_aktion === 'ein') {
-    $roh = isset($_GET['wert']) ? trim((string) $_GET['wert']) : '';
-    /* Abweisen statt zurechtbiegen: (int)"aus" waere 0, und die Regelung
-     * ginge auf einen Tippfehler hin aus, ohne dass jemand es merkt. */
-    if (!in_array($roh, array('0', '1'), true)) {
-        http_response_code(400);
-        echo "FEHLER;OK=0;GRUND=WERT\n";
-        echo "wert muss 0 oder 1 sein, empfangen wurde: " . substr($roh, 0, 40) . "\n";
-        exit;
-    }
-    $neu = ($roh === '1') ? 1 : 0;
-    /* Dieselbe Pruefung wie in der Oberflaeche. Bis 0.9.4 verweigerte die
-     * Oberflaeche das Einschalten bei Maengeln, der Endpunkt schaltete
-     * kommentarlos ein - und Loxone bekam EIN=1 fuer eine Regelung, die
-     * nichts regeln kann. Fail closed: im Zweifel nicht einschalten. */
-    if ($neu === 1) {
-        /* Seit 0.9.27 sperren nur die Maengel aus eb_maengel_sperrend() -
-         * dieselbe Liste wie der Knopf in der Oberflaeche. */
-        $eb_mangel = eb_maengel_sperren(eb_maengel($eb_cfg));
-        if ($eb_mangel) {
-            http_response_code(409);
-            echo "FEHLER;OK=0;GRUND=MAENGEL;EIN=" . (int) $eb_cfg['ein'] . "\n";
-            foreach ($eb_mangel as $eb_k) { echo eb_klartext($eb_k) . "\n"; }
-            exit;
-        }
-    }
-    $eb_gleich = ((int) $eb_cfg['ein'] === $neu);     // X-7
-    if (!$eb_gleich) {
-        /* EIN Feld, unter Sperre. Frueher schrieb der Endpunkt den ganzen
-         * Stand zurueck, den er vor der Aenderung gelesen hatte - wer
-         * gleichzeitig in der Oberflaeche speicherte, verlor seine
-         * Einstellungen, und die Oberflaeche meldete "gespeichert". */
-        if (!eb_config_feld_setzen('ein', $neu)) {
-            http_response_code(500);
-            echo "FEHLER;OK=0;GRUND=SPEICHERN\n";
-            exit;
-        }
-        eb_log('Regelung ueber den Endpunkt ' . ($neu ? 'eingeschaltet' : 'ausgeschaltet') . '.');
-    }
-    /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei. */
-    echo "EIN=" . (int) eb_config(false)['ein'] . ($eb_gleich ? ';UNVERAENDERT=1' : '') . "\n";
-    exit;
-}
-
-/* ---- Die Zielstufe waehlen ----
- * Gewaehlt wird eine STUFE, nie ein Wert. Der Unterschied ist der ganze
- * Sicherheitsgedanke: das Wortzeichen steht offen in der Adresse, und wer
- * damit eine Zahl setzen koennte, koennte die Anlage abschalten. Eine
- * Stufe fuehrt hoechstens zu dem, was der Betreiber selbst eingetragen
- * hat - im schlimmsten Fall zur schaerfsten der drei. */
-if ($eb_aktion === 'stufe') {
-    $roh = isset($_GET['wert']) ? trim((string) $_GET['wert']) : '';
-    if (!in_array($roh, array('0', '1', '2'), true)) {
-        http_response_code(400);
-        echo "FEHLER;OK=0;GRUND=WERT\n";
-        echo "wert muss 0, 1 oder 2 sein, empfangen wurde: " . substr($roh, 0, 40) . "\n";
-        exit;
-    }
-    $neu = (int) $roh;
-    $eb_gleich = ((int) $eb_cfg['stufe'] === $neu);     // X-7
-    if (!$eb_gleich) {
-        /* Wie bei 'ein': EIN Feld, unter Sperre. */
-        if (!eb_config_feld_setzen('stufe', $neu)) {
-            http_response_code(500);
-            echo "FEHLER;OK=0;GRUND=SPEICHERN\n";
-            exit;
-        }
-        eb_log('Zielstufe ueber den Endpunkt auf ' . $neu . ' gestellt.');
-    }
-    /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei. */
-    $eb_frisch = eb_config(false);
-    echo "STUFE=" . (int) $eb_frisch['stufe'] . ";ZIEL=" . (int) eb_ziel_w($eb_frisch)
-        . ($eb_gleich ? ';UNVERAENDERT=1' : '') . "\n";
+/* ---- Regelung ein/aus und Zielstufe ----
+ * Gruppe 3 / MQTT (0.9.37): die Pruefung steht in eb_befehl_ausfuehren() (eb_lib.php); dieselbe Funktion
+ * ruft die Befehlsbruecke (bin/befehle_zuordnung.php, Quelle 'mqtt'). Antwort, Code und Protokoll dieses
+ * Endpunkts sind unveraendert (Wirkungstest Quelle gegen Bau): wert 0|1 bzw. 0|1|2 (sonst 400 WERT),
+ * Einschalten mit sperrendem Mangel 409 MAENGEL, Schreibfehler 500 SPEICHERN, gleicher Zustand
+ * ";UNVERAENDERT=1" ohne Schreiben (X-7). Gewaehlt wird eine STUFE, nie ein Wert. */
+if ($eb_aktion === 'ein' || $eb_aktion === 'stufe') {
+    list($eb_code, $eb_antwort) = eb_befehl_ausfuehren($eb_aktion,
+        isset($_GET['wert']) ? (string) $_GET['wert'] : '', 'http');
+    if ($eb_code !== 200) { http_response_code($eb_code); }
+    echo $eb_antwort;
     exit;
 }
 

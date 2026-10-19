@@ -104,6 +104,13 @@ fi
 # postinstall.sh startet ihn hinterher ohnehin neu.
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
 [ -x "$DIENST" ] && "$DIENST" stop >/dev/null 2>&1
+# Gruppe 3 / MQTT (0.9.37): die Befehlsbruecke ebenso anhalten. Die Marke liegt schon (oben) - der Waechter
+# im Minutentakt startet sie bis postinstall.sh nicht neu; es ist dieselbe Marke, die befehlsbruecke.sh
+# liest. Bis 0.9.36 gab es keine Bruecke (dann fehlt die Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
+fi
 echo "<OK> preupgrade abgeschlossen."
 
 # ---------- Langzeitwerte retten ----------

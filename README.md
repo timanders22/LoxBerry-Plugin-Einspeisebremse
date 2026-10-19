@@ -3,9 +3,35 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.36 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.37 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.37
+
+Werte und Befehle über MQTT – der Weg des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt).
+Der Weg über HTTP (Vorlagen, Wortzeichen, Endpunkt) wirkt unverändert weiter.
+
+* **Befehle über MQTT (Befehlsbrücke):** `einspeisebremse/befehl/einschalten` und `…/ausschalten` (je Puls 1)
+  sowie `…/stufe` (0, 1 oder 2). Sie wirken nur mit zwei Haken im Reiter **MQTT**: „Befehle über MQTT
+  annehmen“ und „Bremse über MQTT steuern“ – beide ab Werk aus. Geprüft wird wie über den Endpunkt: mit
+  einem sperrenden Mangel kein Einschalten, nie ein Wattwert. Quittung auf `…/befehl/<name>/quittung`,
+  Lebenszeichen `einspeisebremse/status/befehle`. Neuer Knopf „Vorlage MQTT-Befehle“.
+* **Reiter Einbindung in Loxone:** MQTT zuerst – Gateway V1/V2 mit Hakenliste (17 Datenpunkte),
+  Namenstabelle mit Kopierknopf statt Werte-Vorlage, Ausfallerkennung am Lebenszeichen `status/zaehler`
+  (Tmc 180 s), Befehle; die Seite „Einspeisebremse“ der Baustein-Liste mit Virtuellen Eingängen und den
+  Befehlen am Ausgang „LoxBerry MQTT-Gateway“. Der Weg über HTTP steht zugeklappt darunter.
+* **−1 statt nichts:** `erzeugung` und `gestellt` senden ohne Wert −1 (MQTT und HTTP-Zeile, bisher nichts
+  bzw. „-“), `messalter` über MQTT ebenso. `netz` und `ueberschuss` bleiben ohne Zählerwert ungesendet,
+  weil −1 W ein echter Messwert wäre; `status/ok` = 0 sagt es. Die HTTP-Vorlage nimmt bei ERZEUGUNG und
+  GESTELLT −1 an.
+* **Broker-Kennwort nie mehr als Argument:** der Dienst übergibt Benutzer und Kennwort an `mosquitto_sub`
+  und `mosquitto_pub` über eine Optionsdatei (0600) statt mit `-P` – es steht nicht mehr in der
+  Prozessliste.
+* Deinstallation: tut nichts, wenn LoxBerry sie für ein anderes Plugin aufruft (dessen Name ein Anfang von
+  „einspeisebremse“ ist); sie hält zuerst die Befehlsbrücke an und entfernt die Optionsdateien mit den
+  Zugangsdaten.
+* Geprüft unter PHP 7.4, 8.4 und 8.5 mit Attrappen, nicht am Gerät.
 
 ## Neu in 0.9.36
 

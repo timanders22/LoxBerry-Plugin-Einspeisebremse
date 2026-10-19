@@ -293,6 +293,20 @@ if [ -x "$PBIN/dienst.sh" ]; then
     fi
 fi
 
+# ---------- Befehlsbruecke (Gruppe 3 / MQTT, 0.9.37) ----------
+# Die Marke ist oben schon entfernt (befehlsbruecke.sh startet nicht, solange eine frische liegt). Die Bruecke
+# startet nur mit dem Haken "Befehle ueber MQTT annehmen" (ab Werk aus); sonst sagt sie "Haken aus". Ein
+# Sollmerker ist nicht noetig: ob sie laufen soll, sagt allein die Konfiguration. Muster: Bewaesserung 0.9.44.
+BBSH="$PBIN/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutentakt versucht es erneut." ;;
+    esac
+fi
+
 # Die Erstanleitung nur ohne eingerichtete Konfiguration (EB_LAGE, oben).
 if [ "$EB_LAGE" = "ein" ] || [ "$EB_LAGE" = "aus" ]; then
     echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."

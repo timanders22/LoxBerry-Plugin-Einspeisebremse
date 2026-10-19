@@ -219,6 +219,7 @@ function eb_test_mqtt()
     $o[] = eb_klartext('TEST.MQ_THEMEN');
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
     foreach (eb_mqtt_themen() as $k => $unbenutzt) { $o[] = '  ' . $praefix . '/' . $k; }
+    $o[] = '  ' . $praefix . '/status/befehle';     // Gruppe 3 (0.9.37): Lebenszeichen der Befehlsbruecke
     /* Energie-1: die Haus-Themen, ohne Praefix und nie retained. */
     $o[] = '';
     $o[] = sprintf(eb_klartext('TEST.MQ_HAUS'),
@@ -257,6 +258,10 @@ function eb_test_mqtt()
         $o[] = sprintf('  %s: %s — %s', $s['name'], $thema, implode('; ', $lage));
     }
     $o[] = eb_klartext('TEST.MQ_STELL_SELBST');
+    /* Gruppe 3 / MQTT (0.9.37): die Einrichtungspruefung der Befehlsbruecke (befehlsbruecke.php --pruefen). */
+    $o[] = '';
+    $o[] = eb_klartext('TEST.MQ_BRUECKE');
+    foreach (eb_bruecke_pruefzeilen() as $eb_bz) { $o[] = '  ' . $eb_bz; }
     $o[] = '';
     $o[] = sprintf(eb_klartext('TEST.MQ_SAEUBERUNG'),
         eb_mqtt_wert_saeubern("Zeile eins\nZeile zwei\tmit Tabulator"));
@@ -712,6 +717,14 @@ function eb_selbstpruefung()
             $mz['gefunden'] ? ($mz['autostart'] ? $ja : eb_klartext('SP.MQTT_KEIN_AUTOSTART'))
                             : eb_klartext('SP.MQTT_NICHT_GEFUNDEN'));
     }
+
+    /* ---- Gruppe 3 / MQTT (0.9.37): Namenstabelle und Befehlsbruecke ----
+     * Die Namen der Einbindung in Loxone gegen die gesendeten Themen (Entwurf eb 2.4); die Bruecke gemessen am
+     * Erzeugnis wie im Waechter. Aus (Haken) ist ein Punkt, kein Kreuz. */
+    list($eb_nok, $eb_ntext) = eb_mqtt_namen_probe();
+    $z[] = eb_pruefzeile(eb_klartext('SP.NAMEN'), $eb_nok, $eb_ntext);
+    list($eb_bok, $eb_btext) = eb_pruef_bruecke();
+    $z[] = eb_pruefzeile(eb_klartext('SP.BRUECKE'), $eb_bok, $eb_btext);
 
     /* ---- Die eigene Oberflaeche ---- */
     list($nl, $nb, $nli, $gleich) = eb_reiter_zaehlen();

@@ -113,6 +113,85 @@ function eb_broker()
     );
 }
 
+/* ==================================================================
+ * Broker-Anmeldung ueber eine Optionsdatei, nie als Argument -P
+ *
+ * Gruppe 3 / MQTT (0.9.37, ENTSCHEIDUNGEN_GRUPPE3_MQTT.md Punkt 4): bis 0.9.36
+ * gingen Benutzer und Kennwort als "-u <benutzer> -P <kennwort>" an
+ * mosquitto_sub und mosquitto_pub (vier Stellen). Ein Argument steht fuer
+ * jeden Benutzer in ps und /proc/<pid>/cmdline; am 03.10.2026 trug eine
+ * Prozessliste so ein Broker-Kennwort weiter. Jetzt stehen beide nur in
+ * data/plugins/<ordner>/mosquitto/mosquitto_sub und .../mosquitto_pub
+ * (Datei 0600, Ordner 0700, wie die Befehlsbruecke), und die Aufrufe
+ * bekommen XDG_CONFIG_HOME auf diesen Ordner - dort liest mosquitto_sub
+ * bzw. mosquitto_pub seine Optionen selbst (Probe P2 der Bruecke,
+ * 18.10.2026: "-P <kennwort>" samt Leerzeichen richtig gelesen).
+ * Ein EIGENER Ordner, nicht der der Bruecke (befehle/mosquitto): die
+ * Bruecke erkennt verwaiste mosquitto_sub an ihrem XDG_CONFIG_HOME und
+ * beendete sonst den Zuhoerer dieses Dienstes.
+ * Laesst sich die Datei nicht schreiben, wird NICHT auf -P zurueckgefallen:
+ * dann wird nichts gelesen und nichts gesendet, und das Protokoll sagt es
+ * einmal je Prozess (fail closed).
+ * ================================================================== */
+
+/** Die Umgebung fuer einen mosquitto-Aufruf: array(true, Umgebung oder null) oder array(false, null).
+ *  null = keine Anmeldung noetig (weder Benutzer noch Kennwort), dann die geerbte Umgebung. */
+function eb_mqtt_umgebung($b)
+{
+    static $fertig = array();
+    $u = (string) $b['user'];
+    $k = (string) $b['pass'];
+    if ($u === '' && $k === '') { return array(true, null); }
+    /* Ein Zeilenumbruch im Benutzer oder Kennwort schleuste in der Datei eine weitere Option ein. */
+    if (preg_match('/[\r\n]/', $u . $k)) { eb_mqtt_optionen_fehlt('Zeilenumbruch in den Zugangsdaten'); return array(false, null); }
+    $ordner = eb_paths()['datadir'] . '/mosquitto';
+    $zeilen = ($u !== '' ? '-u ' . $u . "\n" : '') . ($k !== '' ? '-P ' . $k . "\n" : '');
+    $merk = md5($ordner . "\0" . $zeilen);
+    if (!isset($fertig[$merk]) || !is_file($ordner . '/mosquitto_sub') || !is_file($ordner . '/mosquitto_pub')) {
+        if (!is_dir($ordner) && !@mkdir($ordner, 0700, true) && !is_dir($ordner)) {
+            eb_mqtt_optionen_fehlt('Ordner nicht anlegbar');
+            return array(false, null);
+        }
+        @chmod($ordner, 0700);
+        foreach (array('mosquitto_sub', 'mosquitto_pub') as $n) {
+            $f = $ordner . '/' . $n;
+            clearstatcache(true, $f);
+            if (is_file($f) && (string) @file_get_contents($f) === $zeilen && (fileperms($f) & 0777) === 0600) { continue; }
+            /* Rechte vor dem Inhalt, ueber eine Zwischendatei (wie bb_atomar() der Bruecke). */
+            $tmp = $f . '.tmp.' . getmypid();
+            $fh = @fopen($tmp, 'c');
+            if ($fh === false) { eb_mqtt_optionen_fehlt('Datei nicht schreibbar'); return array(false, null); }
+            @chmod($tmp, 0600);
+            @ftruncate($fh, 0);
+            $w = @fwrite($fh, $zeilen);
+            @fclose($fh);
+            if ($w !== strlen($zeilen) || !@rename($tmp, $f)) {
+                @unlink($tmp);
+                eb_mqtt_optionen_fehlt('Datei nicht schreibbar');
+                return array(false, null);
+            }
+        }
+        $fertig = array($merk => true);
+    }
+    /* Die geerbte Umgebung behalten (PATH, HOME, LANG) und nur XDG_CONFIG_HOME setzen. */
+    $umg = getenv();
+    if (!is_array($umg)) { $umg = array(); }
+    $umg['XDG_CONFIG_HOME'] = $ordner;
+    return array(true, $umg);
+}
+
+/** Einmal je Prozess sagen, warum MQTT ohne Optionsdatei aus bleibt - ohne Kennwort, ohne Pfad. */
+function eb_mqtt_optionen_fehlt($grund)
+{
+    static $gesagt = false;
+    if ($gesagt) { return; }
+    $gesagt = true;
+    $t = 'MQTT: die Optionsdatei fuer die Broker-Anmeldung liess sich nicht anlegen (' . $grund . ') - '
+       . 'ohne sie wird ueber MQTT nichts gelesen und nichts gesendet (kein Kennwort als Argument).';
+    eb_log($t);
+    if (PHP_SAPI === 'cli') { fwrite(STDERR, $t . "\n"); }
+}
+
 function eb_themen($cfg)
 {
     $t = array();
@@ -144,18 +223,19 @@ function eb_hoerer_starten($cfg)
 
     $b = eb_broker();
     if ($b['host'] === '') { eb_ohne_broker_melden(); return false; }
+    /* Gruppe 3 (0.9.37): Benutzer und Kennwort nur in der Optionsdatei (eb_mqtt_umgebung()), nie -u/-P. */
+    list($eb_opt_ok, $eb_umg) = eb_mqtt_umgebung($b);
+    if (!$eb_opt_ok) { return false; }
     $argv = array('mosquitto_sub', '-h', $b['host'], '-p', (string) $b['port'], '-v', '-q', '1');
-    if ($b['user'] !== '') { $argv[] = '-u'; $argv[] = $b['user']; }
-    if ($b['pass'] !== '') { $argv[] = '-P'; $argv[] = $b['pass']; }
     foreach ($themen as $th) { $argv[] = '-t'; $argv[] = $th; }
 
-    /* Als Argumentliste, nicht als Zeichenkette: so kann ein Thema mit
-     * Sonderzeichen kein zweiter Befehl werden. Die Zugangsdaten stehen
-     * damit zwar in der Prozessliste - das ist bei mosquitto_sub nicht zu
-     * vermeiden und gilt fuer jedes Werkzeug, das sie als Argument nimmt. */
+    /* Jedes Argument einzeln gequotet: so kann ein Thema mit Sonderzeichen
+     * kein zweiter Befehl werden. Die Zugangsdaten stehen seit 0.9.37 NICHT
+     * mehr in der Prozessliste - mosquitto_sub liest sie aus der
+     * Optionsdatei unter XDG_CONFIG_HOME (Umgebung, nicht Befehlszeile). */
     $befehl = implode(' ', array_map('escapeshellarg', $argv));
     $rohre = array(1 => array('pipe', 'w'), 2 => array('file', '/dev/null', 'a'));
-    $ph = @proc_open($befehl, $rohre, $pipes);
+    $ph = @proc_open($befehl, $rohre, $pipes, null, $eb_umg);
     if (!is_resource($ph)) {
         eb_log('MQTT: mosquitto_sub konnte nicht gestartet werden.');
         return false;
@@ -643,17 +723,21 @@ function eb_mqtt_veroeffentlichen($thema, $wert, $retained = true)
 {
     $b = eb_broker();
     if ($b['host'] === '') { eb_ohne_broker_melden(); return false; }
+    list($eb_opt_ok, $eb_umg) = eb_mqtt_umgebung($b);
+    if (!$eb_opt_ok) { return false; }
     $argv = array('mosquitto_pub', '-h', $b['host'], '-p', (string) $b['port'], '-t', $thema);
     /* null heisst: leere Nutzlast. Mit Retain LOESCHT sie das Thema im
      * Broker - nur eb_mqtt_abraeumen() und eb_stell_mqtt() rufen so. */
     if ($wert === null) { $argv[] = '-n'; }
     else { $argv[] = '-m'; $argv[] = eb_mqtt_wert_saeubern_d($wert); }
     if ($retained) { $argv[] = '-r'; }
-    if ($b['user'] !== '') { $argv[] = '-u'; $argv[] = $b['user']; }
-    if ($b['pass'] !== '') { $argv[] = '-P'; $argv[] = $b['pass']; }
-    $befehl = implode(' ', array_map('escapeshellarg', $argv)) . ' 2>/dev/null';
-    @exec($befehl, $aus, $rc);
-    return $rc === 0;
+    /* Gruppe 3 (0.9.37): als Argumentliste ohne Schale und mit der Umgebung der Optionsdatei statt
+     * exec() mit -u/-P (das Kennwort stand bis 0.9.36 in der Prozessliste). Ausgaben wie bisher verworfen;
+     * der Rueckgabewert von mosquitto_pub entscheidet. */
+    $ph = @proc_open($argv, array(0 => array('file', '/dev/null', 'r'), 1 => array('file', '/dev/null', 'w'),
+                                  2 => array('file', '/dev/null', 'w')), $pipes, null, $eb_umg);
+    if (!is_resource($ph)) { return false; }
+    return proc_close($ph) === 0;
 }
 
 /* ==================================================================
@@ -700,13 +784,13 @@ function eb_mqtt_veroeffentlichen($thema, $wert, $retained = true)
 function eb_stell_altlast_lesen($thema, $b)
 {
     if ($thema === '' || strpbrk($thema, '+#') !== false) { return 'unbekannt'; }
+    list($eb_opt_ok, $eb_umg) = eb_mqtt_umgebung($b);
+    if (!$eb_opt_ok) { return 'unbekannt'; }
     $argv = array('mosquitto_sub', '-h', $b['host'], '-p', (string) $b['port'],
                   '-t', $thema, '-C', '1', '-W', '2', '-F', '%r');
-    if ($b['user'] !== '') { $argv[] = '-u'; $argv[] = $b['user']; }
-    if ($b['pass'] !== '') { $argv[] = '-P'; $argv[] = $b['pass']; }
     $rohre = array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'),
                    2 => array('file', '/dev/null', 'a'));
-    $ph = @proc_open($argv, $rohre, $pipes);
+    $ph = @proc_open($argv, $rohre, $pipes, null, $eb_umg);
     if (!is_resource($ph)) { return 'unbekannt'; }
     stream_set_blocking($pipes[1], false);
     $aus = '';
@@ -1466,13 +1550,13 @@ function eb_mqtt_eigene_namen()
  */
 function eb_mqtt_behalten_lesen($praefix, $b)
 {
+    list($eb_opt_ok, $eb_umg) = eb_mqtt_umgebung($b);
+    if (!$eb_opt_ok) { return null; }
     $argv = array('mosquitto_sub', '-h', $b['host'], '-p', (string) $b['port'],
                   '-t', $praefix . '/#', '--retained-only', '-W', '2', '-F', '%t');
-    if ($b['user'] !== '') { $argv[] = '-u'; $argv[] = $b['user']; }
-    if ($b['pass'] !== '') { $argv[] = '-P'; $argv[] = $b['pass']; }
     $rohre = array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'),
                    2 => array('file', '/dev/null', 'a'));
-    $ph = @proc_open($argv, $rohre, $pipes);
+    $ph = @proc_open($argv, $rohre, $pipes, null, $eb_umg);
     if (!is_resource($ph)) { return null; }
     stream_set_blocking($pipes[1], false);
     $aus = '';
@@ -1598,10 +1682,12 @@ function eb_veroeffentlichen($cfg, $stand)
     $paare = array(
         'ein' => (int) $stand['ein'],
         'netz' => $stand['netz'] === null ? '' : (int) $stand['netz'],
-        'erzeugung' => $stand['erzeugung'] === null ? '' : (int) $stand['erzeugung'],
+        /* Gruppe 3 (0.9.37, Entwurf eb E2): erzeugung, gestellt und messalter ohne Wert -1 statt nichts;
+         * netz und ueberschuss bleiben ohne Zaehlerwert ungesendet (E4: -1 W waere ein echter Wert). */
+        'erzeugung' => $stand['erzeugung'] === null ? -1 : (int) $stand['erzeugung'],
         'ueberschuss' => $stand['ueberschuss_w'] === null ? '' : (int) $stand['ueberschuss_w'],
         'grenze' => (int) $stand['drossel_w'],
-        'gestellt' => $stand['gestellt_w'] === null ? '' : (int) $stand['gestellt_w'],
+        'gestellt' => $stand['gestellt_w'] === null ? -1 : (int) $stand['gestellt_w'],
         'ladesoll' => (int) $stand['lade_soll_w'],
         'anlass' => $stand['anlass'],
         'tat' => (int) $stand['tat'],
@@ -1609,7 +1695,7 @@ function eb_veroeffentlichen($cfg, $stand)
         'wirkung' => (int) $stand['wirkung'],
         'speicher' => (int) $stand['speicher_folgt'],
         'alter' => max(0, time() - (int) $stand['zeit']),
-        'messalter' => $stand['netz_alter'] === null ? '' : (int) round($stand['netz_alter']),
+        'messalter' => $stand['netz_alter'] === null ? -1 : (int) round($stand['netz_alter']),
         /* Das Lebenszeichen geht in JEDEM Durchlauf hinaus, nicht retained
          * (Regeln/07). 'online' behaelt seine Bedeutung 1/0 - 0.9.18 hatte
          * daraus "1;<zeit>" gemacht, und jeder Baustein, der auf 1 prueft,
