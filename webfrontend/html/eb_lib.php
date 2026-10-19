@@ -1782,9 +1782,9 @@ function eb_bausteine_speicher()
     $n = function ($name) { return array(array('n', $name)); };
     $ein = function ($nr) { return array(array('ts', 'BAUSTEIN.E_EIN', $nr)); };
     $i12 = function ($a, $b) { return array(array('ts', 'BAUSTEIN.E_I1I2', $a, $b)); };
-    /* Der Ausgang fuer die Haus-Themen ist eine Vorlage des Musterprojekts
-       (VQ_loxberry_mqtt_haus.xml), keine Vorlage dieses Plugins; die Themen wie eb_haus_themen(). */
-    $mq = array(array('ts', 'BAUSTEIN.B_VQBEF', eb_e('LoxBerry MQTT Haus')));
+    /* Der Ausgang fuer die Haus-Themen ist eine Vorlage des Musterprojekts (VQ_loxberry_mqtt_gateway.xml,
+       Ausgang "LoxBerry MQTT-Gateway"), keine Vorlage dieses Plugins; die Themen wie eb_haus_themen(). */
+    $mq = array(array('ts', 'BAUSTEIN.B_VQBEF', eb_e('LoxBerry MQTT-Gateway')));
     return array(
         1  => array($t('T_VEIN'), $n('Ladeleistung Speicher 1 (eigene Quelle)'), $t('SP01_PARAM'), $leer),
         2  => array($t('T_VEIN'), $n('Ladezustand Speicher 1 (Proz) (eigene Quelle)'), $t('SP02_PARAM'), $leer),

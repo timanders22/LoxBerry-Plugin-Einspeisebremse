@@ -3,9 +3,15 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.35 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.36 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.36
+
+Textnachzug zum Musterprojekt, Reiter **Einbindung in Loxone**, Seite „Einspeisebremse Speicher“: Ausgang heißt
+jetzt ‚LoxBerry MQTT-Gateway‘ (Nr. 8 und 12, bisher „LoxBerry MQTT Haus“); das Bild der Seite ist erneuert.
+Themen und Befehle sind unverändert, ebenso das Plugin und seine Vorlagen. Auch der Kasten der Seite nennt den neuen Ausgang.
 
 ## Neu in 0.9.35
 
