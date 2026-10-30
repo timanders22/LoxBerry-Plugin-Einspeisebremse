@@ -3,9 +3,25 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.37 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.38 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.38
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne neue Funktion und ohne Änderung an Regelung, Werten oder Befehlen:
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung, bisher 1.0.0): die Vorlage „Einspeisebremse MQTT-Befehle“ kommt
+  wie die Ausfuhren der Loxone Config mit Windows-Zeilenenden (CRLF); Titel, Adresse und Befehle sind unverändert, ein
+  Neuimport ist nicht nötig. `stop` legt als root nichts mehr an, `befehle_start.log` wird gekappt, der Befehlsordner
+  ist nur für das Plugin lesbar (0700).
+* **Reiter Test, neue Zeile „Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?“** Unter MQTT-Gateway V2
+  liest das Plugin `config/system/subscriptions.json` und nennt jeden Datenpunkt der Hakenliste (Reiter *Einbindung in
+  Loxone*, Schritt 2), der dort nicht angehakt ist, und jeden, bei dem „Noncached“ nicht stimmt. Unter Gateway V1 und
+  bei ausgeschalteter MQTT-Veröffentlichung heißt die Zeile „trifft nicht zu“.
+* **Noncached:** Die Hakenliste hat eine Spalte *Noncached*. Nötig ist es für `status/ok` und `status/befehle`: beide
+  kommen meist mit gleichem Wert, und Gateway V2 unterdrückt einen gleichen Wert – ohne den Haken fehlten sie nach
+  einem Neustart des Miniservers. Bis 0.9.37 stand dort „kein Thema braucht Noncached“.
 
 ## Neu in 0.9.37
 

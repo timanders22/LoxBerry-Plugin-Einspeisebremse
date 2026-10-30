@@ -725,6 +725,11 @@ function eb_selbstpruefung()
     $z[] = eb_pruefzeile(eb_klartext('SP.NAMEN'), $eb_nok, $eb_ntext);
     list($eb_bok, $eb_btext) = eb_pruef_bruecke();
     $z[] = eb_pruefzeile(eb_klartext('SP.BRUECKE'), $eb_bok, $eb_btext);
+    /* Nachtwelle N9 (0.9.38): stehen unter MQTT-Gateway V2 die Haken der Hakenliste (Einbindung in Loxone, Schritt 2)
+     * mit dem richtigen Noncached? Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein
+     * Punkt. Die Bemerkung maskiert eb_test.php beim Ausgeben. */
+    list($eb_v2s, $eb_v2t) = eb_v2_haken_lage();
+    $z[] = eb_pruefzeile(eb_klartext('SP.V2_HAKEN'), $eb_v2s === 2 ? -1 : $eb_v2s, $eb_v2t);
 
     /* ---- Die eigene Oberflaeche ---- */
     list($nl, $nb, $nli, $gleich) = eb_reiter_zaehlen();

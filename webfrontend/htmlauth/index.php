@@ -1544,9 +1544,9 @@ list(, $eb_abo_da2) = eb_abo_datei($eb_cfg['mqtt_topic']); ?>
 <div class="sm-hinweis"><?= sprintf(eb_t('LOX.M_S2_V2'), '<span class="sm-mono">' . eb_e($eb_gpraefix) . '</span>') ?></div>
 <details open><summary><?= eb_e(sprintf(eb_t('LOX.M_HAKEN_AUF'), count($eb_haken))) ?></summary>
 <div class="sm-breit"><table class="sm-tbl">
-<tr><th style="width:34px;">#</th><th><?= eb_e(eb_t('LOX.M_T_THEMA')) ?></th><th><?= eb_e(eb_t('LOX.M_T_NAME')) ?></th><th><?= eb_e(eb_t('LOX.M_T_BEDEUTUNG')) ?></th><th><?= eb_e(eb_t('LOX.M_T_ART')) ?></th></tr>
+<tr><th style="width:34px;">#</th><th><?= eb_e(eb_t('LOX.M_T_THEMA')) ?></th><th><?= eb_e(eb_t('LOX.M_T_NAME')) ?></th><th><?= eb_e(eb_t('LOX.M_T_BEDEUTUNG')) ?></th><th><?= eb_e(eb_t('LOX.M_T_ART')) ?></th><th><?= eb_e(eb_t('LOX.M_T_NC')) ?></th></tr>
 <?php foreach ($eb_haken as $eb_hi => $eb_hz) { ?>
-<tr><td><?= (int) $eb_hi + 1 ?></td><td><span class="sm-mono"><?= eb_e($eb_hz[0]) ?></span></td><td><span class="sm-mono"><?= eb_e($eb_hz[1]) ?></span></td><td><?= eb_e($eb_hz[2]) ?></td><td><?= eb_e(eb_t($eb_hz[3] === 'text' ? 'LOX.M_ART_TEXT' : 'LOX.M_ART_ZAHL')) ?></td></tr>
+<tr><td><?= (int) $eb_hi + 1 ?></td><td><span class="sm-mono"><?= eb_e($eb_hz[0]) ?></span></td><td><span class="sm-mono"><?= eb_e($eb_hz[1]) ?></span></td><td><?= eb_e($eb_hz[2]) ?></td><td><?= eb_e(eb_t($eb_hz[3] === 'text' ? 'LOX.M_ART_TEXT' : 'LOX.M_ART_ZAHL')) ?></td><td><?= !empty($eb_hz[4]) ? eb_e(eb_t('LOX.M_T_NC')) : '&ndash;' ?></td></tr>
 <?php } ?>
 </table></div>
 </details>
