@@ -214,6 +214,17 @@ function eb_themen($cfg)
     return array_keys($t);
 }
 
+/**
+ * Ein Argument fuer die Schale anfuehren, Byte fuer Byte: fuer Themen, Werte und Texte, nicht fuer Pfade.
+ * Bis 0.9.38 stand hier escapeshellarg(). Es verwirft unter PHP 7.4 jedes Byte, das im LC_CTYPE kein gueltiges Zeichen ist; Apache startet mit LANG=C, eine
+ * Befehlsbruecke ohne LANG: aus "Kueche" mit Umlaut wurde "Kche", ohne Fehler (am Geraet gemessen 01.11.2026). setlocale() fehlt, wo keine UTF-8-Locale
+ * erzeugt ist, und aendert basename() und PCRE. Einfache Anfuehrungszeichen sind fuer sh und dash byte-erhaltend; ein Nullbyte kann kein Argument tragen.
+ */
+function eb_shell_arg($s)
+{
+    return "'" . str_replace("'", "'\\''", str_replace("\0", '', (string) $s)) . "'";
+}
+
 function eb_hoerer_starten($cfg)
 {
     global $eb_hoerer, $eb_rohr, $eb_rest;
@@ -232,8 +243,10 @@ function eb_hoerer_starten($cfg)
     /* Jedes Argument einzeln gequotet: so kann ein Thema mit Sonderzeichen
      * kein zweiter Befehl werden. Die Zugangsdaten stehen seit 0.9.37 NICHT
      * mehr in der Prozessliste - mosquitto_sub liest sie aus der
-     * Optionsdatei unter XDG_CONFIG_HOME (Umgebung, nicht Befehlszeile). */
-    $befehl = implode(' ', array_map('escapeshellarg', $argv));
+     * Optionsdatei unter XDG_CONFIG_HOME (Umgebung, nicht Befehlszeile).
+     * exec: bis 0.9.38 stand die Schale dazwischen (dash ersetzt sich bei sh -c nicht selbst, am Geraet gemessen 01.11.2026),
+     * das Beenden traf nur sie, und mosquitto_sub blieb als Waise am Broker. */
+    $befehl = 'exec ' . implode(' ', array_map('eb_shell_arg', $argv));
     $rohre = array(1 => array('pipe', 'w'), 2 => array('file', '/dev/null', 'a'));
     $ph = @proc_open($befehl, $rohre, $pipes, null, $eb_umg);
     if (!is_resource($ph)) {
@@ -248,11 +261,64 @@ function eb_hoerer_starten($cfg)
     return true;
 }
 
+/**
+ * Ein Kind beenden, ohne dass proc_close() haengen kann: SIGTERM, hoechstens $frist Sekunden warten, dann SIGKILL.
+ * Bis %FASS% stand hier SIGTERM allein. Am Geraet (MGiSmart, 01.11.2026) reagierte mosquitto_sub nicht darauf
+ * (futex_do_wait), proc_close() wartete 5 Stunden, und der Dienst stand mit.
+ */
+function eb_proc_beenden($ph, $frist = 2.0)
+{
+    $s = @proc_get_status($ph);
+    if (!is_array($s) || !$s['running']) { return; }
+    @proc_terminate($ph, 15);
+    $bis = microtime(true) + (float) $frist;
+    while (microtime(true) < $bis) {
+        usleep(50000);
+        $s = @proc_get_status($ph);
+        if (!is_array($s) || !$s['running']) { return; }
+    }
+    @proc_terminate($ph, 9);
+}
+
+/**
+ * Auf ein Kind warten, ohne dass proc_close() haengen kann; Rueckgabe sein Rueckgabewert, 124 nach Ablauf der Frist.
+ * Hoechstens $warten Sekunden ungestoert, dann SIGTERM, hoechstens $frist Sekunden, dann SIGKILL, erst dann proc_close(). Bis 0.9.38 stand hier proc_close()
+ * ohne Frist: am Geraet hing mosquitto_sub am 01.11.2026 nach SIGTERM 5 Stunden fest, und der Aufrufer stand mit. proc_get_status() liefert den Rueckgabewert
+ * nur beim ersten Aufruf nach dem Ende, proc_close() danach -1 (PHP unter 8.3), darum kommt er von hier und nicht von proc_close().
+ */
+function eb_proc_abwarten($pr, $warten, $frist = 2.0)
+{
+    $stufe = 0;
+    $bis = microtime(true) + max(0.0, (float) $warten);
+    $schlaf = 2000;
+    while (true) {
+        $s = @proc_get_status($pr);
+        if (!is_array($s) || empty($s['running'])) {
+            $rc = is_array($s) && isset($s['exitcode']) ? (int) $s['exitcode'] : -1;
+            if (is_array($s) && !empty($s['signaled'])) { $rc = 128 + (int) $s['termsig']; }
+            @proc_close($pr);
+            return $stufe > 0 ? 124 : $rc;
+        }
+        if (microtime(true) >= $bis) {
+            if ($stufe === 1) {
+                @proc_terminate($pr, 9);
+                @proc_close($pr);
+                return 124;
+            }
+            @proc_terminate($pr, 15);
+            $stufe = 1;
+            $bis = microtime(true) + (float) $frist;
+        }
+        usleep($schlaf);
+        $schlaf = min(50000, $schlaf * 2);
+    }
+}
+
 function eb_hoerer_beenden()
 {
     global $eb_hoerer, $eb_rohr;
     if (is_resource($eb_rohr)) { @fclose($eb_rohr); }
-    if (is_resource($eb_hoerer)) { @proc_terminate($eb_hoerer); @proc_close($eb_hoerer); }
+    if (is_resource($eb_hoerer)) { eb_proc_beenden($eb_hoerer); @proc_close($eb_hoerer); }
     $eb_rohr = null;
     $eb_hoerer = null;
 }
@@ -737,7 +803,7 @@ function eb_mqtt_veroeffentlichen($thema, $wert, $retained = true)
     $ph = @proc_open($argv, array(0 => array('file', '/dev/null', 'r'), 1 => array('file', '/dev/null', 'w'),
                                   2 => array('file', '/dev/null', 'w')), $pipes, null, $eb_umg);
     if (!is_resource($ph)) { return false; }
-    return proc_close($ph) === 0;
+    return eb_proc_abwarten($ph, 6.0) === 0;
 }
 
 /* ==================================================================
@@ -1136,6 +1202,9 @@ function eb_durchlauf($cfg, $stand)
         $neu['ext_sperre_bis'] = isset($r['ext_sperre_bis']) ? $r['ext_sperre_bis'] : 0.0;
         eb_extern_melden($stand, $neu, $cfg, $jetzt);
     }
+
+    /* Die Totmannschaltung als Ansage: nur bei eingeschalteter Regelung, nach 2 Minuten Dauer, der erste Lauf schweigt. Legt nur hin. */
+    if (!empty($cfg['ein']) && function_exists('eb_ansage_flanke')) { eb_ansage_flanke('notfall', !empty($neu['notfall']), '', 120); }
 
     /* Nur Stellglieder, die es noch gibt. Die Liste kommt aus dem alten
      * Stand und wurde bis 0.9.25 nur bei Freigabe oder geaenderter Grenze
@@ -1908,15 +1977,16 @@ function eb_mqtt_abmelden($cfg)
  * ================================================================== */
 
 if ($eb_hat('--probe')) {
-    $cfg = eb_config();
-    eb_hoerer_starten($cfg);
+    /* bis 0.9.38 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+    $eb_lauf_cfg = eb_config();
+    eb_hoerer_starten($eb_lauf_cfg);
     // Dem Zuhoerer einen Augenblick geben - ohne retained-Flag kommt sonst
     // nichts an, und das saehe nach einem Fehler aus, wo keiner ist.
     for ($i = 0; $i < 30; $i++) { usleep(100000); eb_hoerer_abholen(); }
     foreach (eb_quellenfelder() as $k => $eb_f) {
         $name = $eb_f['kurz'];
-        list($w, $a, $anlass) = eb_quelle_lesen($cfg[$k]);
-        $grenze = max(10.0, eb_zahl($cfg['quelle_alter_s'], 300.0));
+        list($w, $a, $anlass) = eb_quelle_lesen($eb_lauf_cfg[$k]);
+        $grenze = max(10.0, eb_zahl($eb_lauf_cfg['quelle_alter_s'], 300.0));
         if ($k !== 'q_netz' && $w !== null && $a >= 0.0 && $a > $grenze) {
             $anlass = 'zu_alt (Grenze ' . (int) $grenze . ' s)';
             $w = null;
@@ -1926,11 +1996,11 @@ if ($eb_hat('--probe')) {
             $anlass . ($w === null ? '' : sprintf(' (%.1f s alt)', $a)));
     }
     /* Energie-1 C3: der Wert aus Loxone, wie ihn der Dienst bewertet. */
-    if (!empty($cfg['speicher_extern'])) {
+    if (!empty($eb_lauf_cfg['speicher_extern'])) {
         list($w, $anlass, $a) = eb_extern_bewerten(
             isset($eb_werte['haus/energie/aufnahme_w']) ? $eb_werte['haus/energie/aufnahme_w'] : null,
             isset($eb_werte['haus/energie/aufnahme_ts']) ? $eb_werte['haus/energie/aufnahme_ts'] : null,
-            microtime(true), max(10.0, eb_zahl($cfg['quelle_alter_s'], 300.0)));
+            microtime(true), max(10.0, eb_zahl($eb_lauf_cfg['quelle_alter_s'], 300.0)));
         printf("%-13s %-10s %s\n", 'Aufnahme', $w === null ? '-' : round($w, 1),
             $anlass . ($a === null ? '' : sprintf(' (%.1f s alt)', $a)) . ' [haus/energie/aufnahme_w]');
     }
@@ -1954,10 +2024,10 @@ if ($eb_hat('--probe')) {
  * ob es gewirkt hat, sagt danach allein der Zaehler.
  * ================================================================== */
 if ($eb_hat('--sunspec')) {
-    $cfg = eb_config();
+    $eb_lauf_cfg = eb_config();
     $gefunden = 0;
-    $stellglieder = $cfg['steller'];
-    $stellglieder[] = $cfg['sp_steller'];
+    $stellglieder = $eb_lauf_cfg['steller'];
+    $stellglieder[] = $eb_lauf_cfg['sp_steller'];
     foreach ($stellglieder as $s) {
         if ($s['art'] !== 'sunspec') { continue; }
         $gefunden++;
@@ -2052,23 +2122,23 @@ $eb_p = eb_paths();
 if (!is_dir($eb_p['datadir'])) { @mkdir($eb_p['datadir'], 0775, true); }
 
 if ($eb_hat('--einmal')) {
-    $cfg = eb_config();
-    eb_hoerer_starten($cfg);
+    $eb_lauf_cfg = eb_config();
+    eb_hoerer_starten($eb_lauf_cfg);
     for ($i = 0; $i < 30; $i++) { usleep(100000); eb_hoerer_abholen(); }
     $vor = eb_stand();
-    $neu = eb_durchlauf($cfg, $vor);
+    $neu = eb_durchlauf($eb_lauf_cfg, $vor);
     $neu['zaehler'] = (isset($vor['zaehler']) ? (int) $vor['zaehler'] + 1 : 0) % 1000;
     eb_json_schreiben($eb_p['datadir'] . '/stand.json', $neu);
-    eb_bilanz_fortschreiben($cfg, $neu, microtime(true));
-    eb_verlauf_fortschreiben($cfg, $neu, microtime(true));
-    eb_veroeffentlichen($cfg, $neu);
-    eb_haus_veroeffentlichen($cfg, $neu);
+    eb_bilanz_fortschreiben($eb_lauf_cfg, $neu, microtime(true));
+    eb_verlauf_fortschreiben($eb_lauf_cfg, $neu, microtime(true));
+    eb_veroeffentlichen($eb_lauf_cfg, $neu);
+    eb_haus_veroeffentlichen($eb_lauf_cfg, $neu);
     echo eb_zeile($neu);
     eb_hoerer_beenden();
     /* Die Deinstallation wertet den Rueckgabewert aus. Bis 0.9.25 immer 0 -
      * "<OK> Die Anlage wurde freigegeben" auch dann, wenn das eigene
      * Protokoll derselben Sekunde "keine Antwort" schrieb. */
-    exit((empty($cfg['ein']) && eb_steller() && empty($neu['freigegeben'])) ? 1 : 0);
+    exit((empty($eb_lauf_cfg['ein']) && eb_steller() && empty($neu['freigegeben'])) ? 1 : 0);
 }
 
 /* ---- Dauerbetrieb ---- */

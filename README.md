@@ -3,9 +3,19 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.38 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.39 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.39
+
+**Ab dieser Fassung sind die Sprachansagen ab Werk an, auch nach einem Update, wenn Sie die Ausgabeart nie gespeichert haben.** Eine gespeicherte Einstellung bleibt, wie sie ist, auch „aus“. **Ausschalten:** Reiter *Einstellungen*, Abschnitt *Sprachansagen*, Ausgabeart **„aus“** wählen und speichern; das bleibt auch nach jedem weiteren Update aus.
+
+* **Was angesagt wird:** bei eingeschalteter Regelung: seit zwei Minuten kein Zählerwert, die Anlage läuft auf der Notfallgrenze, und wieder geregelt (nur nach einer angesagten Störung). Nichts davon ist dringend, nachts schweigt es: Die Notfallgrenze hält die Anlage selbst.
+* **Wohin:** ab Werk zugleich Loxone Music Server (braucht seine Adresse), Google-Lautsprecher über Chromecast4lox (braucht dort ein Standardgerät oder hier den Namen) und Amazon Echo über Alexa-NG. Ein Ziel, das nicht bereitsteht, wird ohne Fehler übergangen; der Abschnitt *Sprachansagen* sagt, was ihm fehlt. Das Sprechtoken der beiden Plugins müssen Sie nicht abschreiben: Es wird übernommen, in der Konfiguration gespeichert und nachgezogen; ein von Hand eingetragenes bleibt.
+* **Wann nicht:** Nachtruhe 22 bis 7 Uhr (einstellbar, wird nicht nachgeholt; Dringendes spricht trotzdem), dieselbe Ansage höchstens einmal in 30 Minuten (einstellbar) und solange Loxone das retained MQTT-Thema `haus/ansage/ruhe` auf 1 setzt (das gilt auch für Dringendes). Die Testansage spricht immer. Ausgabeart, Ziele und Regeln reisen in der Sicherung mit, das Sprechtoken nie.
+* **Der Dienst wartet nicht auf Lautsprecher:** Gesprochen wird in einem eigenen Vorgang.
+
 
 ## Neu in 0.9.38
 

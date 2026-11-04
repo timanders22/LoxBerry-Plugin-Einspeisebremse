@@ -285,6 +285,19 @@ if ($eb_post && isset($_POST['vorlage_bb'])) {
 }
 
 /* ---------------- Regelung ein- oder ausschalten ---------------- */
+/* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+if ($eb_post && isset($_POST['ansage_test'])) {
+    list($eb_at, $eb_ag) = eb_ansage_test();
+    if ($eb_at) { $eb_meldungen[] = eb_e(eb_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $eb_fehler[] = eb_e(eb_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $eb_ag); }
+    $eb_tab = 'tab-settings';
+}
+if ($eb_post && isset($_POST['ansage_speichern'])) {
+    list($eb_ao, $eb_af, $eb_ah) = eb_ansage_post($_POST);
+    if ($eb_af) { foreach ($eb_af as $eb_ax) { $eb_fehler[] = eb_e($eb_ax); } }
+    elseif ($eb_ao) { $eb_meldungen[] = eb_e(trim(eb_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $eb_ah))); }
+    else { $eb_fehler[] = eb_e(eb_t('ANSAGEPLUGIN.M_FEHL')); }
+    $eb_tab = 'tab-settings';
+}
 if ($eb_post && isset($_POST['schalten'])) {
     $eb_cfg = eb_config();
     $eb_neu = ((string) $_POST['schalten'] === '1') ? 1 : 0;
@@ -1376,6 +1389,7 @@ foreach ($eb_gruppen as $eb_zeile) { ?>
 </div>
 </form>
 
+<?= eb_ansage_form_html(eb_fmt() . '<input data-role="none" type="hidden" name="activetab" value="tab-settings">') ?>
 <h2><?= eb_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= eb_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= eb_t('EINST.SICH_WARNUNG') ?></div>

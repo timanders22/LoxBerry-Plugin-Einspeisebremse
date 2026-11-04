@@ -42,7 +42,8 @@ return array(
         return eb_befehle_einstellungen();
     },
     'protokoll' => function ($stufe, $text) {
-        eb_log('Befehlsbruecke ' . ($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
+        // 0.9.39: bb_log() setzt "Befehlsbruecke: " schon vor den Text - bis 0.9.38 stand es doppelt (Nachzug 01.11.2026, wie MGiSmart 1.1.30).
+        eb_log(($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
     },
     'befehle' => array(
         'einschalten' => array('art' => 'puls', 'eingreifend' => true, 'sperre_s' => 0, 'begruendung' => $eb_ohne_sperre,
