@@ -16,6 +16,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-einspeisebremse}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 # ---------- Die Wurzel: GELESEN, nicht gerechnet ----------
 # Bis 0.9.21 fiel dieses Skript ohne fuenftes Argument und ohne $LBHOMEDIR
 # auf "zwei Ebenen ueber dem eigenen Ablageort" zurueck - ohne zu pruefen,
@@ -55,7 +59,7 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
     echo "<WARNING> des eigenen Ablageorts fuehrten auf config/plugins, data/plugins"
     echo "<WARNING> und config/system/general.json."
     echo "<WARNING> Es wurde NICHTS gesichert, keine Marke gelegt und kein Dienst angehalten."
-    exit 1
+    exit 2
 fi
 
 # Zuerst die Marke "Aktualisierung laeuft". Der Installer legt die
@@ -67,8 +71,46 @@ fi
 # NEBEN dem Datenordner, weil purge_installation den Ordner selbst loescht.
 mkdir -p "$BASE/data/plugins" 2>/dev/null
 date +%s > "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
-[ -s "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ] \
-    && echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
+if [ -s "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ]; then
+    echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
+else
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
+    echo "<FAIL> Die Marke $BASE/data/plugins/$PFOLDER.upgrade_laeuft liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
+fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_sichere() {   # $1 Quelle, $2 Ziel: fehlt die Datei oder ist sie leer, ist ein Fehlschlag keiner
+    [ -f "$1" ] || return 0
+    zs_hinlegen "$1" "$2" && return 0
+    [ -s "$1" ] || return 1
+    echo "<WARNING> $(basename "$1") liess sich nicht sichern ($2)."
+    ZS_FEHL="$ZS_FEHL $(basename "$1")"
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
+    exit 2
+}
 
 CF="$BASE/config/plugins/$PFOLDER/einspeisebremse.json"
 ZW="$BASE/config/plugins/$PFOLDER.backup.json"
@@ -89,9 +131,12 @@ if [ -f "$CF" ]; then
         CF_OK=$?
     fi
     if [ "$CF_OK" = "0" ]; then
-        cp -p "$CF" "$ZW" \
-            && chmod 600 "$ZW" 2>/dev/null \
-            && echo "<OK> Konfiguration gesichert."
+        if zs_hinlegen "$CF" "$ZW"; then
+            echo "<OK> Konfiguration gesichert."
+        else
+            echo "<WARNING> Die Konfiguration liess sich nicht sichern ($ZW)."
+            ZS_FEHL="$ZS_FEHL einspeisebremse.json"
+        fi
     elif [ -s "$ZW" ]; then
         echo "<WARNING> Die Konfiguration ist leer oder beschaedigt; die bisherige Zweitschrift bleibt unberuehrt und wird nach dem Update zurueckgespielt."
     else
@@ -102,6 +147,7 @@ fi
 # Den Dienst anhalten, BEVOR seine Dateien ersetzt werden. Ein laufender
 # Prozess, dessen Quelltext unter ihm ausgetauscht wird, ist eine Wette;
 # postinstall.sh startet ihn hinterher ohnehin neu.
+zs_schluss
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
 [ -x "$DIENST" ] && "$DIENST" stop >/dev/null 2>&1
 # Gruppe 3 / MQTT (0.9.37): die Befehlsbruecke ebenso anhalten. Die Marke liegt schon (oben) - der Waechter
@@ -129,11 +175,11 @@ LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 mkdir -p "$LANG_SICHER" 2>/dev/null
 chmod 0700 "$LANG_SICHER" 2>/dev/null
 for LANG_F in verlauf.json bilanz.json retain_stellbefehl.json; do
-    [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
-        && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
+    zs_sichere "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F"
 done
 # Die Wirkung pruefen, nicht den Rueckgabewert: liegt hinterher etwas da?
 if [ -n "$(ls -A "$LANG_SICHER" 2>/dev/null)" ]; then
     echo "<OK> Langzeitwerte gesichert."
 fi
+zs_schluss
 exit 0

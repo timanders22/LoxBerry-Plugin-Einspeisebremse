@@ -3,9 +3,15 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.40 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.41 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.41
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Formular:** Ein beanstandeter Tafel- oder HomePod-Name bleibt zur Korrektur im Feld stehen.
 
 ## Neu in 0.9.40
 
