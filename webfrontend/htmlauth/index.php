@@ -260,6 +260,7 @@ if ($eb_post && isset($_POST['vorlage'])) {
         $eb_fehler[] = eb_t('LOX.FEHLER_VORLAGE');
         $eb_tab = 'tab-loxone';
     } else {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/xml; charset=utf-8');
         // Anfuehrungszeichen um den Dateinamen: ohne sie bricht jeder Name
         // mit einem Leerzeichen darin.
@@ -275,6 +276,7 @@ if ($eb_post && isset($_POST['vorlage'])) {
 if ($eb_post && isset($_POST['vorlage_bb'])) {
     $eb_bv = eb_befehle_vorlage();
     if (is_array($eb_bv)) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/xml; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $eb_bv[0] . '"');
         echo $eb_bv[1];
@@ -799,6 +801,7 @@ $eb_rahmen = class_exists('LBWeb', false);
 if ($eb_post && isset($_POST['eb_sichern'])) {
     $eb_js = eb_sicherung_bauen(eb_config());
     if ($eb_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="einspeisebremse_einstellungen_'
                . date('Ymd_His') . '.json"');
