@@ -3,9 +3,18 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.43 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.44 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.44
+
+Pflegefassung aus der Nachtprüfung vom 12.11.2026. Ziele, Stellwege, MQTT-Themen und Loxone-Namen bleiben, wie sie sind.
+
+- **Fehler behoben: Bei ausbleibendem Zählerwert wurde immer tiefer abgeregelt.** Liefert der Netzzähler einmal nichts, rechnet die Bremse bis *Notfall nach* mit dem letzten guten Wert weiter. Bis 0.9.43 zog sie dabei in jedem Durchlauf denselben Überschuss erneut ab – am Prüfstand gemessen mit −1500 W, Takt 5 s, Grenze 6000 W: 4500, 3000, 1500, 0 W, obwohl 4500 W richtig waren. Auf einem Hybrid heißt eine zu tiefe Grenze Netzbezug. Dasselbe traf einen MQTT-Zähler, der seltener sendet als der Takt. Jetzt bleibt alles, wie es ist, bis ein neuer Zählerwert kommt (Anlass *messwert_wiederholt*, „seit dem letzten Durchlauf kam kein neuer Zählerwert“). Nach *Notfall nach* greift wie bisher der Notwert.
+- **Fehler behoben: 65535 und −32768 galten als Messwert.** Bei SunSpec sind das die Marken für „nicht unterstützt“. Eine Modbus-Quelle der Art `uint16` mit 65535 oder `int16` mit −32768 liefert jetzt keinen Wert (Anlass `modbus_nicht_unterstuetzt`). Bisher wurde daraus etwa ein Ladestand von 655 % (der Speicher galt als voll) oder am Netz eine Einspeisung von 32 kW.
+- **Fehler behoben: Zurückspielen nahm Stellglieder an Plätzen an, die die Oberfläche nicht zeigt.** Eine Sicherung mit einem Stellglied unter einem anderen Schlüssel als 0 bis 3 wird jetzt abgewiesen.
+- **Texte berichtigt:** Beim Anhalten des Dienstes hieß es „Die zuletzt gestellte Grenze bleibt bestehen“. Bei einem SunSpec-Stellglied mit Rückfall (RvrtTms) gilt das nur bis zum Ablauf des Rückfalls; danach gibt der Wechselrichter von selbst frei. Protokoll, Dienstskript und Oberfläche sagen das jetzt.
 
 ## Neu in 0.9.43
 

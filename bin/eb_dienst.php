@@ -495,10 +495,16 @@ function eb_modbus_lesen($adresse, $zeit = 4)
             $v = unpack('N', substr($daten, 0, 4));
             $wert = ($v[1] >= 2147483648) ? $v[1] - 4294967296 : $v[1];
             break;
+        /* SEIT 0.9.44: 65535 (uint16) und -32768 (int16) sind bei SunSpec die Marken fuer "nicht unterstuetzt",
+         * keine Messwerte (Regeln/12). Bis 0.9.43 wurde 0xFFFF auf 40321 mit Faktor 0,01 zu 655 % Ladestand
+         * (der Speicher galt als voll) und 0x8000 am Netz zu 32 kW Einspeisung. */
         case 'uint16':
-            $v = unpack('n', substr($daten, 0, 2)); $wert = $v[1]; break;
+            $v = unpack('n', substr($daten, 0, 2)); $wert = $v[1];
+            if ($wert === 65535) { return array(null, 'nicht_unterstuetzt'); }
+            break;
         default:
             $v = unpack('n', substr($daten, 0, 2));
+            if ($v[1] === 32768) { return array(null, 'nicht_unterstuetzt'); }
             $wert = ($v[1] >= 32768) ? $v[1] - 65536 : $v[1];
     }
     return array((float) $wert, 'gut');
@@ -1073,6 +1079,12 @@ function eb_durchlauf($cfg, $stand)
         $netz_alter = max(0.0, $jetzt - $netz_gut_um);
         $netz_anlass = 'letzter_wert_' . $netz_anlass;
     }
+    /* Seit 0.9.44: Zeitpunkt der Messung, auf die geregelt wird. Ist es derselbe wie im letzten Durchlauf,
+     * haelt der Kern still (eb_messung_wiederholt(), Anlass messwert_wiederholt) statt denselben Ueberschuss
+     * ein weiteres Mal abzuziehen. */
+    $netz_stempel = ($netz !== null) ? $jetzt - max(0.0, (float) $netz_alter) : 0.0;
+    $netz_wiederholt = eb_messung_wiederholt($netz_stempel,
+        isset($stand['netz_stempel']) ? $stand['netz_stempel'] : 0);
 
     /* ---- Speicher extern gefuehrt (Energie-1 C3) ----
      * Der Wert aus Loxone: wie viel die Speicher, die Loxone fuehrt, gerade
@@ -1109,6 +1121,7 @@ function eb_durchlauf($cfg, $stand)
          * "gerade eben gemessen", und darauf wuerde die Regelung die
          * Erzeugung freigeben. */
         'alter_s'   => ($netz === null) ? -1 : $netz_alter,
+        'wiederholt' => $netz_wiederholt ? 1 : 0,
     );
     if ($eb_ext) { $mess['aufnahme_w'] = $auf; }
 
@@ -1187,6 +1200,7 @@ function eb_durchlauf($cfg, $stand)
         'frei_versuch'  => isset($stand['frei_versuch']) ? (int) $stand['frei_versuch'] : 0,
         'frei_zuletzt'  => isset($stand['frei_zuletzt']) ? (float) $stand['frei_zuletzt'] : 0.0,
         'netz_gut_um'   => $netz_gut_um,
+        'netz_stempel'  => $netz_stempel,
         'netz_gut_wert' => ($netz !== null && strpos((string) $netz_anlass, 'letzter_wert_') !== 0)
                            ? $netz : (isset($stand['netz_gut_wert']) ? $stand['netz_gut_wert'] : null),
     );
@@ -2210,7 +2224,8 @@ while ($eb_laeuft) {
 }
 
 /* ---- Beim Beenden: die Anlage nicht gedrosselt zuruecklassen? ----
- * Doch. Die Grenze bleibt, wie sie ist. Ein Dienst, der beim Beenden alles
+ * Doch. Die Grenze bleibt, wie sie ist (seit 0.9.44 sagt die Protokollzeile dazu: bei SunSpec mit
+ * Rueckfall nur bis RvrtTms - danach gibt der Wechselrichter selbst frei). Ein Dienst, der beim Beenden alles
  * freigibt, hebt genau in dem Augenblick eine Auflage auf, in dem niemand
  * mehr hinsieht - beim Neustart des LoxBerry, beim Update, beim Absturz.
  * Wer die Drosselung loswerden will, schaltet die Regelung in der
@@ -2218,5 +2233,5 @@ while ($eb_laeuft) {
  * gestellt. */
 eb_hoerer_beenden();
 eb_mqtt_abmelden($eb_cfg);
-eb_log('Dienst beendet. Die zuletzt gestellte Grenze bleibt bestehen.');
+eb_log('Dienst beendet. Die zuletzt gestellte Grenze bleibt bestehen - bei einem SunSpec-Stellglied mit Rueckfall (RvrtTms) nur bis zu dessen Ablauf, danach gibt der Wechselrichter von selbst frei.');
 exit(0);

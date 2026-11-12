@@ -254,6 +254,19 @@ function eb_grenzen_wahren($erg, $anlage_max_w, $lade_max_w)
  *            sp_sperre_bis; mit speicher_extern zusaetzlich ext_seit,
  *            ext_sperre_bis, extern (Urteil aus eb_extern_wartet)
  */
+/**
+ * Ist der Zaehlerwert derselbe, den schon der letzte Durchlauf hatte? (seit 0.9.44)
+ * $stempel ist der Zeitpunkt der Messung (Durchlaufzeit minus Alter des Werts), $vorher der des letzten
+ * Durchlaufs. Unbekannt (0, leer, keine Zahl) heisst: nicht wiederholt.
+ */
+function eb_messung_wiederholt($stempel, $vorher)
+{
+    if (!is_numeric($stempel) || !is_numeric($vorher)) { return false; }
+    $a = (float) $stempel;
+    $b = (float) $vorher;
+    return $a > 0.0 && $b > 0.0 && abs($a - $b) < 0.5;
+}
+
 function eb_regeln($mess, $cfg, $zust, $jetzt)
 {
     $alter = eb_zahl(isset($mess['alter_s']) ? $mess['alter_s'] : -1, -1.0);
@@ -332,6 +345,20 @@ function eb_regeln($mess, $cfg, $zust, $jetzt)
         $erg['tat'] = EB_DROSSEL;
         $erg['anlass'] = ($alter < 0.0) ? 'kein_messwert' : 'messwert_alt';
         $erg['notfall'] = 1;
+        return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
+    }
+
+    /* ---- Derselbe Zaehlerwert wie im letzten Durchlauf (seit 0.9.44) ----
+     * Bis 0.9.43 regelte jeder Durchlauf auf den Ueberschuss, auch wenn der
+     * Zaehler seither nichts Neues geliefert hatte (letzter guter Wert bis
+     * notfall_s, oder ein MQTT-Wert, der seltener kommt als der Takt). Der
+     * Kern zog denselben Ueberschuss dann in jedem Takt erneut ab: gemessen
+     * mit Netz fest -1500 W, ohne Erzeugungsmessung, Grenze 6000 W - nach
+     * drei Takten 1500 W, nach vier 0 W statt 4500 W. Jetzt bleibt alles,
+     * wie es ist, bis ein neuer Wert kommt; die Totmannschaltung oben
+     * greift weiter nach notfall_s. */
+    if (!empty($mess['wiederholt'])) {
+        $erg['anlass'] = 'messwert_wiederholt';
         return eb_grenzen_wahren($erg, $anlage_max, $lade_max);
     }
 
@@ -848,6 +875,18 @@ function eb_selbsttest($ausgabe = true)
     $r = eb_regeln(array('netz' => null, 'erzeugung' => 6000, 'alter_s' => -1),
                    $cfg, array('drossel_w' => 6000), 1000);
     $pruef('nie ein Messwert: Notfall', $r['anlass'], 'kein_messwert');
+
+    // ---- Derselbe Zaehlerwert wie im letzten Durchlauf (seit 0.9.44) ----
+    $pruef('Stempel gleich: wiederholt', eb_messung_wiederholt(1000.2, 1000.0) ? 1 : 0, 1);
+    $pruef('Stempel neu: nicht wiederholt', eb_messung_wiederholt(1005.0, 1000.0) ? 1 : 0, 0);
+    $pruef('Stempel unbekannt: nicht wiederholt', eb_messung_wiederholt(1000.0, 0) ? 1 : 0, 0);
+    $rw = eb_regeln(array('netz' => -1500, 'erzeugung' => null, 'alter_s' => 10, 'wiederholt' => 1),
+                   $cfg, array('drossel_w' => 4500), 1000);
+    $pruef('wiederholter Wert: Grenze bleibt', $rw['drossel_w'], 4500);
+    $pruef('wiederholter Wert: Anlass', $rw['anlass'], 'messwert_wiederholt');
+    $rw = eb_regeln(array('netz' => -1500, 'erzeugung' => null, 'alter_s' => 120, 'wiederholt' => 1),
+                   $cfg, array('drossel_w' => 4500), 1000);
+    $pruef('wiederholter Wert ueber notfall_s: Notfall greift', $rw['anlass'], 'messwert_alt');
     // Ohne Zaehlerwert ist der Ueberschuss UNBEKANNT, nicht null.
     $pruef('ohne Zaehlerwert bleibt der Ueberschuss unbekannt',
            $r['ueberschuss_w'] === null ? 'null' : 'zahl', 'null');

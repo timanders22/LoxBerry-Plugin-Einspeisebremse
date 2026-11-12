@@ -2537,6 +2537,12 @@ function eb_wert_pruefen($k, $w)
     if ($k === 'steller') {
         if (!is_array($w) || count($w) > EB_STELLER) { return 'kein Feld'; }
         foreach ($w as $i => $s) {
+            /* SEIT 0.9.44: nur die Plaetze, die die Oberflaeche fuehrt (0 bis EB_STELLER - 1). Bis 0.9.43 nahm
+             * eine Sicherung mit "steller": {"7": {...}} ein achtes Stellglied an, das eb_steller() stellte und
+             * die Oberflaeche nie zeigte; der Schluessel "x" ueberschrieb Stellglied 1. */
+            if (!is_int($i) || $i < 0 || $i >= EB_STELLER) {
+                return 'Stellglied an unzulaessigem Platz ' . substr((string) $i, 0, 20);
+            }
             $g = eb_steller_feld_pruefen($s);
             if ($g !== '') { return 'Stellglied ' . ((int) $i + 1) . ': ' . $g; }
         }

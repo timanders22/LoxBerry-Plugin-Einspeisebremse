@@ -255,7 +255,7 @@ case "$1" in
             exit 1
         fi
         rm -f "$PIDF"
-        echo "Einspeisebremse angehalten. Die zuletzt gestellte Grenze bleibt bestehen."
+        echo "Einspeisebremse angehalten. Die zuletzt gestellte Grenze bleibt bestehen - bei einem SunSpec-Stellglied mit Rueckfall (RvrtTms) nur bis zu dessen Ablauf."
         ;;
     restart)
         # Aus einem Archiv heraus haelt "restart" nichts an und startet
