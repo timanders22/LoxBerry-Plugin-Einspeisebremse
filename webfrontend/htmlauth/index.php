@@ -799,8 +799,8 @@ $eb_rahmen = class_exists('LBWeb', false);
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($eb_post && isset($_POST['eb_sichern'])) {
-    $eb_js = eb_sicherung_bauen(eb_config());
-    if ($eb_js !== false) {
+    $eb_js = eb_sicherung_bauen(eb_config());     // 0.9.45: Kopf und Inhalt baut das Sicherungsmodul
+    if ($eb_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="einspeisebremse_einstellungen_'
@@ -813,60 +813,34 @@ if ($eb_post && isset($_POST['eb_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+ * 0.9.45: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Modul 1.1.0,
+ * Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne
+ * ihn wird nichts gelesen und nichts geaendert), dann is_uploaded_file() (sonst liesse sich jede
+ * Datei des Servers unterschieben) und die Groessengrenze des Moduls; erst danach wird die Datei
+ * gelesen. */
 if ($eb_post && isset($_POST['eb_zurueck'])) {
-    if (!isset($_FILES['eb_sicherung']) || !is_array($_FILES['eb_sicherung'])
-        || !isset($_FILES['eb_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['eb_sicherung']['tmp_name'])) {
-        $eb_fehler[] = eb_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['eb_sicherung']['size'] > 262144) {
-        $eb_fehler[] = eb_t('EINST.SICH_ZU_GROSS');
+    list($eb_roh, $eb_ab) = sicherung_eingang(eb_sicherung_beschreibung(), $_POST, $_FILES, 'eb_sicherung');
+    if ($eb_ab !== null) {
+        $eb_sm = sicherung_meldungen(eb_sicherung_beschreibung(), $eb_ab);
+        foreach ($eb_sm['fehler'] as $eb_x) { $eb_fehler[] = $eb_x; }
     } else {
-        /* EIGENE Variable. Bis 0.9.17 stand hier $eb_mangel - dieselbe,
-         * aus der weiter unten der Maengelkasten gebaut wird. Nach einem
-         * erfolgreichen Zurueckspielen war der Kasten deshalb leer,
-         * obwohl die eingespielte Konfiguration Maengel haben kann, und
-         * nach einem abgelehnten standen die Ablehnungsgruende ein
-         * zweites Mal darin - als waeren es Einschalthindernisse.
-         * Dazu kommt: eb_maengel() liefert SCHLUESSEL, diese Funktion
-         * fertige Texte. */
-        list($eb_neu, $eb_sich_mangel, $eb_n, $eb_sich_hinweis) = eb_sicherung_lesen(
-            (string) @file_get_contents($_FILES['eb_sicherung']['tmp_name']));
-        if ($eb_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $eb_fehler[] = eb_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $eb_sich_mangel);
-        } elseif (!empty($eb_neu['ein']) && eb_maengel_sperren(eb_maengel($eb_neu))) {
-            /* Eine Sicherung, die mit einem Sperrmangel EINSCHALTET, wird nicht
-             * zurueckgespielt - geaendert wird nichts (Pruefer 28.09.2026, O7). */
-            $eb_fehler[] = eb_t('EINST.SICH_SPERRT');
-            foreach (eb_maengel_sperren(eb_maengel($eb_neu)) as $eb_k) { $eb_fehler[] = eb_t($eb_k); }
-        } elseif (eb_config_speichern($eb_neu)) {
-            $eb_meldungen[] = sprintf(eb_t('EINST.SICH_UEBERNOMMEN'), $eb_n);
-            foreach ($eb_sich_hinweis as $eb_h) { $eb_meldungen[] = $eb_h; }
-            /* Wie beim Speichern: die Abo-Datei auf den zurueckgespielten
-             * Praefix bringen - bis 0.9.25 geschah das hier nicht. */
-            eb_abo_datei($eb_neu['mqtt_topic'], true);
-            eb_log('Einstellungen aus einer Sicherung zurueckgespielt (' . $eb_n . ' Werte).');
-            /* Was mit dem Dienst geschieht (Hausstandard): er liest die
-             * Konfiguration in jedem Takt neu (eb_dienst.php), ein Neustart
-             * ist nicht noetig. Das wird gesagt, nicht verschwiegen. */
-            $eb_meldungen[] = eb_dienst_pid() > 0
-                ? sprintf(eb_t('EINST.SICH_DIENST_LAEUFT'), (int) $eb_neu['takt'])
-                : eb_t('EINST.SICH_DIENST_STEHT');
-            /* Die Anzeige neu holen. $eb_cfg wurde weiter oben aus der
-             * Datei gefuellt; ohne dieses Nachlesen zeigte die Seite nach
-             * dem Zurueckspielen weiter den ALTEN Stand in jedem Feld -
-             * und ein anschliessendes Speichern schrieb ihn zurueck. */
-            $eb_cfg = eb_config();
-            $eb_stand = eb_stand();
-            $eb_mangel = eb_maengel($eb_cfg);
-        } else {
-            $eb_fehler[] = eb_t('EINST.SICH_SCHREIBFEHLER');
-        }
+        /* 0.9.45: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen(), Beschreibung
+         * eb_sicherung_beschreibung()) liest, prueft, verwirft Unbekanntes mit Namen, laesst leere
+         * Werte den bisherigen stehen und aendert bei einer Beanstandung GAR NICHTS (alle
+         * Beanstandungen, nicht nur die erste). Eine Sicherung, die die Regelung mit einem
+         * Sperrmangel einschaltet, wird nicht zurueckgespielt ('vorbedingung'). Die Meldungen landen
+         * in EIGENEN Sammlern, nicht in $eb_mangel (bis 0.9.17 war es derselbe, und der
+         * Maengelkasten zeigte die Ablehnungsgruende als Einschalthindernisse). eb_config_speichern()
+         * schreibt Konfiguration und Zweitschrift; das Modul misst danach, ob sie inhaltsgleich sind. */
+        $eb_b = eb_sicherung_beschreibung();
+        $eb_b['speichern'] = function ($neu) { return eb_config_speichern($neu); };
+        $eb_b['zweitschrift'] = function () { $p = eb_paths(); return array($p['config'], $p['sicherung']); };
+        $eb_b['nachziehen'] = 'eb_sicherung_nachziehen';
+        $eb_b['log'] = 'eb_log';
+        $eb_r = sicherung_zurueckspielen($eb_b, $eb_roh);
+        $eb_sm = sicherung_meldungen($eb_b, $eb_r);
+        foreach ($eb_sm['fehler'] as $eb_x) { $eb_fehler[] = $eb_x; }
+        foreach ($eb_sm['hinweise'] as $eb_x) { $eb_meldungen[] = $eb_x; }
     }
 }
 
@@ -1416,6 +1390,7 @@ if ($eb_sich_warn) { ?>
     <?php echo eb_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="eb_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(eb_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="eb_zurueck" value="1"><?= eb_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>

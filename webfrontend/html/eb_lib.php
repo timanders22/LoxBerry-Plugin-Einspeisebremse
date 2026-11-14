@@ -1,5 +1,9 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+/* Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, seit 0.9.45): "Einstellungen
+ * sichern" und "Einstellungen zurueckspielen" verhalten sich in allen Plugins des Hauses gleich. Liegt neben
+ * dieser Datei und schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sicherung.php';
 /**
  * Einspeisebremse - gemeinsame Bibliothek
  *
@@ -2616,48 +2620,6 @@ function eb_ansage_wert($k, $w)
     return false;
 }
 
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function eb_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function eb_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = eb_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, eb_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = eb_tts($j);
-    }
-    foreach (array_diff(eb_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
-}
-
 /**
  * Die Hauptkonfiguration. Liegt eine ansage.json aus einer Probe vom 01.11., wird sie EINMAL uebernommen (Vermerk ansage_aus_datei) und bleibt liegen.
  */
@@ -3035,141 +2997,193 @@ function eb_ansage_flanke($anlass, $gestoert, $name = '', $frist = 0, $jetzt = n
     return eb_ansage_legen(array($ein));
 }
 
-function eb_sicherung_lesen($roh, &$namen = null)
+/**
+ * 0.9.45: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul
+ * (Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn 12.11.2026). Lesen,
+ * Pruefen und Zurueckspielen macht das Modul; bis 0.9.44 stand hier eine eigene
+ * Schleife (eb_sicherung_lesen()): ein unbekannter Schluessel oben wies die ganze
+ * Datei ab, einer in einem Block (Stellglied, Quelle) ebenso, und das Kennzeichen
+ * _plugin wurde geschrieben, aber nie gelesen - eine fremde Datei oder eine ohne
+ * Kennzeichen wurde gelesen wie eine eigene (gemessen 14.11.2026 an 0.9.44 mit
+ * Werkzeuge/sicherung_pruefstand.py --profil ist).
+ *
+ * Seither: das Kennzeichen 'einspeisebremse' (seit 0.9.18 im Kopf jeder
+ * Sicherung) bleibt und wird geprueft; eine Datei mit fremdem oder ohne
+ * Kennzeichen wird abgewiesen; unbekannte Schluessel oben, in den Bloecken
+ * (Sprachansagen, Quellen, Stellglied des Speichers) und in den Stellgliedern
+ * werden verworfen und mit Namen gemeldet; ein leerer Wert ueberschreibt keinen
+ * bestehenden. Der Kopf traegt dazu _fassung.
+ *
+ * Wie bisher: jeder Wert geht durch eb_wert_taugt() und eb_wert_pruefen()
+ * (dieselbe Erwartung wie eb_config()), die Sprachansagen durch eb_ansage_wert()
+ * (eine Datei mit Sprechtoken wird abgewiesen); eine halb gueltige Datei aendert
+ * nichts, alle Beanstandungen werden gesammelt; eine Sicherung, die die Regelung
+ * mit einem Sperrmangel einschaltet, wird nicht zurueckgespielt ('vorbedingung',
+ * Pruefer 28.09.2026, O7); was eine fruehere Fassung nicht kannte
+ * (eb_sicherung_neue_schluessel()), behaelt den geltenden Wert; der Vermerk
+ * ansage_token_herkunft und ansage_aus_datei kommen nie aus einer Datei.
+ */
+function eb_sicherung_beschreibung()
 {
-    $roh = eb_ansage_sicherung_vor($roh);     // Token und Vermerk bleiben die geltenden
-    $mangel = array();
-    // X-3: die Namen der beanstandeten Schluessel, nie ihre Werte.
-    $namen = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(eb_t('EINST.SICH_KEIN_JSON')), 0);
+    $p = eb_paths();
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $steller = array_merge(array_keys(eb_steller_vorgabe()), array('aktiv'));     // aktiv: Altlast bis 0.9.x
+    $schluessel = array(
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
+                                                        + array('fehlt' => 'behalten')))
+                 + array(
+                     'sichern' => 'ansage_sicherung_bereinigen',
+                     'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                         /* Eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei eines, wird
+                          * sie abgewiesen. Gemessen am Block der DATEI, denn Regel 3 des Moduls setzt ein leeres
+                          * Feld vorher auf den geltenden Wert. */
+                         if (ansage_sicherung_mangel($roh) || eb_ansage_wert('tts', ansage_sicherung_bereinigen($w)) !== true) {
+                             return eb_t('ANSAGEPLUGIN.M_FEHL');
+                         }
+                         return '';
+                     },
+                     'wandeln' => function ($w) {
+                         $g = '';
+                         return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, eb_ansage_modi());
+                     }),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())),
+        'ansage_haken' => sicherung_block(array('notfall')),
+        'steller' => sicherung_liste($steller),
+        'sp_steller' => sicherung_block($steller),
+    );
+    foreach (array_keys(eb_quellenfelder()) as $q) {
+        $schluessel[$q] = sicherung_block(array_keys(eb_quelle_vorgabe()));
     }
-    $neu = eb_vorgaben();
-    $bekannt = array_keys($neu);
-    $gesehen = array();
-    $anzahl = 0;
-    foreach ($daten as $k => $w) {
-        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet. */
-        if ($k !== '' && $k[0] === '_') { continue; }
-        $eb_aw = eb_ansage_wert($k, $w);     // Sprachansagen: eigene Pruefung; Token und Vermerk bleiben die geltenden
-        if ($eb_aw !== null) {
-            if ($eb_aw) { $neu[$k] = $w; $anzahl++; } else { $mangel[] = eb_t('ANSAGEPLUGIN.M_FEHL'); $namen[] = (string) $k; }
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(eb_t('EINST.SICH_FREMD'),
-                htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            $namen[] = (string) $k;
-            continue;
-        }
-        $grund = eb_wert_taugt($w) ? eb_wert_pruefen($k, $w) : 'unbrauchbarer Wert';
-        if ($grund !== '') {
-            $mangel[] = sprintf(eb_t('EINST.SICH_WERT'),
-                htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($grund, ENT_QUOTES, 'UTF-8'));
-            $namen[] = (string) $k;
-            continue;
-        }
-        $neu[$k] = $w;
-        $gesehen[$k] = 1;
-        $anzahl++;
+    foreach (eb_sicherung_spaete_schluessel() as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['fehlt'] = 'behalten';
     }
-    /* Was fehlt, ist genauso ein Mangel wie was zuviel ist - sonst geht
-     * jeder nicht genannte Schluessel still auf Werk. */
-    /* Nur, was in der Datei WIRKLICH fehlt. Bis 0.9.25 stand hier auch jeder
-     * Schluessel mit abgelehntem Wert - "fehlen: ziel1_w, frei_w, takt",
-     * obwohl ziel1_w und takt da waren und nur ungueltig (28.09.2026). */
-    $fehlt = array();
-    foreach ($bekannt as $k) {
-        if (!array_key_exists($k, $daten)) { $fehlt[] = $k; }
-    }
-    /* Energie-1 (01.10.2026): eine Sicherung aus einer Fassung vor den drei
-     * Energie-1-Schluesseln ist vollstaendig - es fehlen nur die neuen. Sie
-     * wird angenommen, und die drei behalten den laufenden Wert (wie bei
-     * einem Update); die Meldung nennt sie. Ohne diese Zeilen wiese das
-     * Zurueckspielen jede Sicherung aus 0.9.28 und 0.9.29 ab. */
-    $spaeter = array_values(array_intersect($fehlt, eb_sicherung_neue_schluessel()));
-    $fehlt = array_values(array_diff($fehlt, $spaeter));
-    if ($fehlt && $anzahl > 0) {
-        $namen = array_merge($namen, $fehlt);
-        $mangel[] = sprintf(eb_t('EINST.SICH_FEHLT'),
-            htmlspecialchars(implode(', ', $fehlt), ENT_QUOTES, 'UTF-8'));
-    }
-    if ($anzahl === 0) {
-        $mangel[] = eb_t('EINST.SICH_LEER');
-    }
-    /* Ein LEERES Aktionstoken in der Sicherung heisst "keins gesichert".
-     * Bis 0.9.25 wurde es uebernommen; beim naechsten Seitenaufruf entstand
-     * still ein neues, und jede in Loxone eingetragene Adresse bekam 403.
-     * Jetzt bleibt das bisherige Token stehen, und die Meldung sagt es. */
-    $hinweise = array();
-    if (!$mangel && $spaeter) {
-        $eb_lauf = eb_config(false);
-        foreach ($spaeter as $k) { $neu[$k] = $eb_lauf[$k]; }
-        $hinweise[] = sprintf(eb_t('EINST.SICH_NEUE_BEHALTEN'),
-            htmlspecialchars(implode(', ', $spaeter), ENT_QUOTES, 'UTF-8'));
-    }
-    if (!$mangel && (string) $neu['aktionstoken'] === '') {
-        $alt = eb_config(false);
-        $neu['aktionstoken'] = (string) $alt['aktionstoken'];
-        $hinweise[] = eb_t('EINST.SICH_TOKEN_BEHALTEN');
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $hinweise);
+    return array(
+        'kennzeichen' => 'einspeisebremse',
+        'hinweis' => eb_klartext('EINST.SICH_KOPF'),
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg - keine fuenfte Stelle neben den
+         * vier, die Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => (string) $p['home'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => eb_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ansage_aus_datei'),
+        'pruefen' => function ($k, $w) {
+            $a = eb_ansage_wert($k, $w);
+            if ($a !== null) { return $a ? '' : eb_t('ANSAGEPLUGIN.M_FEHL'); }
+            $grund = eb_wert_taugt($w) ? eb_wert_pruefen($k, $w) : 'unbrauchbarer Wert';
+            return $grund === '' ? '' : sprintf(eb_t('EINST.SICH_WERT'),
+                htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'), htmlspecialchars($grund, ENT_QUOTES, 'UTF-8'));
+        },
+        'vorbedingung' => function ($neu) {
+            /* Eine Sicherung, die mit einem Sperrmangel EINSCHALTET, wird nicht zurueckgespielt - geaendert wird
+             * nichts (Pruefer 28.09.2026, O7). */
+            $s = !empty($neu['ein']) ? eb_maengel_sperren(eb_maengel($neu)) : array();
+            if (!$s) { return array(); }
+            $aus = array(eb_t('EINST.SICH_SPERRT'));
+            foreach ($s as $k) { $aus[] = eb_t($k); }
+            return $aus;
+        },
+        'warnung' => function ($cfg) {
+            /* X-3: schaltet die Sicherung mit einem Sperrmangel ein, wiese das Zurueckspielen sie ab (siehe
+             * 'vorbedingung') - der Kopf _warnung sagt es, nur mit dem Namen. */
+            return (!empty($cfg['ein']) && eb_maengel_sperren(eb_maengel($cfg)))
+                ? array(sprintf(eb_klartext('EINST.SICH_WARN_KOPF'), 'ein')) : array();
+        },
+        'vorbereiten' => 'eb_sicherung_vorbereiten',
+        'jetzt' => 'eb_ansage_cfg',
+        't' => 'eb_t',
+    );
 }
 
 /**
- * Die Sicherungsdatei bauen - mit lesbarem Kopf.
- *
- * Der Kopf sagt dem Menschen, was er vor sich hat; die Leseseite
- * uebergeht ihn. Ohne den Hinweis liegt eine Datei mit dem Aktionstoken
- * im Download-Ordner, und niemand weiss es.
+ * 0.9.45: Die Schluessel, die eine aeltere Sicherung dieser Linie noch nicht
+ * kennen konnte. Fehlen sie, behalten sie den geltenden Wert, und die Meldung
+ * nennt sie (Regeln/05 Punkt 6): die von Energie-1 und Gruppe 3
+ * (eb_sicherung_neue_schluessel(), wie bisher) und die Sprachansagen (bis
+ * 0.9.44 setzte eb_ansage_sicherung_vor() sie still auf den geltenden Wert).
  */
-function eb_sicherung_bauen($cfg, $pruefen = true)
+function eb_sicherung_spaete_schluessel()
 {
-    /* Keine Fassungsnummer im Kopf: die steht in diesem Haus an genau
-     * einer Stelle (plugin.cfg, release.cfg, prerelease.cfg, README), und
-     * fassung_setzen.py pflegt genau die. Eine Konstante hier waere eine
-     * zweite Quelle, die beim naechsten Sprung stehenbliebe. */
-    $kopf = array(
-        '_hinweis' => eb_klartext('EINST.SICH_KOPF'),
-        '_plugin'  => 'einspeisebremse',
-        '_stand'   => date('Y-m-d H:i:s'),
-    );
-    /* X-3 (B-Nachzug, 01.10.2026): Wuerde das eigene Zurueckspielen diese
-     * Datei abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert
-     * wird sie trotzdem vollstaendig. */
-    if ($pruefen) {
-        $eb_namen = eb_rueckspiel_altwerte($cfg);
-        if ($eb_namen) {
-            $kopf['_warnung'] = sprintf(eb_klartext('EINST.SICH_WARN_KOPF'), implode(', ', $eb_namen));
-        }
+    return array_merge(eb_sicherung_neue_schluessel(), array('tts', 'ansage_regeln', 'ansage_haken'));
+}
+
+/**
+ * 0.9.45: Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls). Der Block tts
+ * wird wie bis 0.9.44 vervollstaendigt, und die geltenden Sprechtoken bleiben
+ * (die Sicherung traegt keine). Kam der Block nicht aus der Datei, steht dort
+ * schon der geltende. Die Vermerke ansage_token_herkunft und ansage_aus_datei
+ * behalten ihren geltenden Wert ('nie_aus_datei', Modul 1.2.1); der geltende
+ * Stand kommt aus eb_ansage_cfg() ('jetzt'), die eine liegengebliebene
+ * ansage.json aus der Probe vom 01.11. vorher einmal uebernimmt und
+ * ansage_aus_datei dabei auf 1 setzt - wie bis 0.9.44.
+ */
+function eb_sicherung_vorbereiten($neu, $jetzt, $r)
+{
+    if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        list($tv) = ansage_vervollstaendigen($neu['tts'], 'aus');
+        $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
     }
-    return json_encode($kopf + eb_ansage_fuer_sicherung($cfg),     // nie ein Sprechtoken
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return $neu;
+}
+
+/**
+ * 0.9.45: Nach dem Zurueckspielen nachziehen und sagen, was mit dem Dienst
+ * geschah (Regeln/05). Rueckgabe: Hinweise (Texte aus der Sprachdatei).
+ *  - Ein leeres Aktionstoken in der Datei behaelt das geltende (Regel 3 des
+ *    Moduls); die Seite sagt, was das fuer die Adressen in Loxone heisst.
+ *  - Die Abo-Datei folgt dem zurueckgespielten Praefix (wie beim Speichern).
+ *  - Der Dienst liest die Konfiguration in jedem Takt neu (bin/eb_dienst.php);
+ *    ein Neustart ist nicht noetig, und das wird gesagt.
+ */
+function eb_sicherung_nachziehen($neu, $jetzt, $r)
+{
+    $h = array();
+    if (in_array('aktionstoken', $r['leer_behalten'], true)) {
+        $h[] = eb_t('EINST.SICH_TOKEN_BEHALTEN');
+    }
+    eb_abo_datei((string) $neu['mqtt_topic'], true);
+    $h[] = eb_dienst_pid() > 0
+        ? sprintf(eb_t('EINST.SICH_DIENST_LAEUFT'), (int) $neu['takt'])
+        : eb_t('EINST.SICH_DIENST_STEHT');
+    return $h;
+}
+
+/**
+ * Die Sicherungsdatei - lesbarer Kopf (_hinweis, _plugin, _fassung, _stand, bei
+ * Bedarf _warnung) und alle Schluessel der Vorgaben aus $cfg, gebaut vom
+ * gemeinsamen Sicherungsmodul (sicherung_bauen()). Nie ein Sprechtoken, nie die
+ * Vermerke. Keine Fassungsnummer im Code: _fassung kommt aus der
+ * Plugin-Datenbank bzw. plugin.cfg (sicherung_fassung_lesen()). X-3 (B-Nachzug,
+ * 01.10.2026): wuerde das eigene Zurueckspielen diese Datei abweisen, sagt es der
+ * Kopf _warnung - nur Namen, nie Werte; geliefert wird sie trotzdem vollstaendig.
+ * Rueckgabe: der JSON-Text, '' wenn er sich nicht bilden laesst.
+ */
+function eb_sicherung_bauen($cfg)
+{
+    return sicherung_json(sicherung_bauen(eb_sicherung_beschreibung(), $cfg));
 }
 
 /**
  * X-3: Welche Einstellungen wuerden beim Zurueckspielen der EIGENEN Sicherung
- * abgewiesen? Gebaut wird genau die Datei, die "Einstellungen sichern"
- * liefert, und durch dieselben Wachen geschickt wie beim Zurueckspielen:
- * eb_sicherung_lesen() und - wie der Handler in htmlauth/index.php - "schaltet
- * ein, hat aber einen sperrenden Mangel". Rueckgabe: Namen (nie Werte), leer
- * heisst "wuerde angenommen".
+ * abgewiesen? Seit 0.9.45 dieselbe Pruefung wie beim Zurueckspielen ueber das
+ * Sicherungsmodul (sicherung_selbstpruefung()) an genau der Datei, die
+ * "Einstellungen sichern" liefert, und - wie die Vorbedingung des
+ * Zurueckspielens - "schaltet ein, hat aber einen sperrenden Mangel".
+ * Rueckgabe: Namen (nie Werte), leer heisst "wuerde angenommen".
  */
 function eb_rueckspiel_altwerte($cfg)
 {
-    $js = eb_sicherung_bauen($cfg, false);
-    if ($js === false) { return array(); }     // Sichern meldet dann selbst SICH_SCHREIBFEHLER
-    $namen = array();
-    $erg = eb_sicherung_lesen($js, $namen);
-    $neu = $erg[0];
-    if ($neu !== null && !empty($neu['ein']) && eb_maengel_sperren(eb_maengel($neu))) {
+    $b = eb_sicherung_beschreibung();
+    $d = sicherung_bauen($b, $cfg);
+    unset($d['_warnung']);
+    $namen = sicherung_selbstpruefung($b, $d, $cfg);
+    if (!$namen && !empty($cfg['ein']) && eb_maengel_sperren(eb_maengel($cfg))) {
         $namen[] = 'ein';
     }
     $namen = array_values(array_unique(array_map('strval', $namen)));
     sort($namen);
-    if ($neu === null && !$namen) { $namen[] = eb_klartext('EINST.SICH_GANZE_DATEI'); }
     return $namen;
 }
 

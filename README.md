@@ -3,9 +3,20 @@
 **Null- oder begrenzte Einspeisung für mehrere Wechselrichter und Hybrid-Speicher.**
 Misst am Netzzähler, füllt erst den Speicher, regelt erst dann ab.
 
-Version 0.9.44 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.45 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.45
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe „Einstellungen sichern“ und „Einstellungen zurückspielen“ arbeiten jetzt mit demselben Sicherungsmodul (1.2.2) wie die übrigen Plugins dieser Reihe.
+  - Das Kennzeichen `einspeisebremse` steht seit 0.9.18 im Kopf jeder Sicherung, wurde aber bis 0.9.44 nicht gelesen. Jetzt wird eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen als Ganzes abgewiesen. Der Kopf trägt dazu die Fassung (`_fassung`). Sicherungen von 0.9.15 bis 0.9.17 hatten keinen Kopf und werden abgewiesen (bis 0.9.44 angenommen).
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei, in den Blöcken (Sprachansagen, Quellen, Speicher-Stellglied) und in den Stellgliedern. Die übrigen Einstellungen werden zurückgespielt. Bisher wies ein unbekannter Name die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bisher galt das nur für das Aktionstoken.
+  - Fehlt einer Sicherung eine Einstellung, die ihre Fassung noch nicht kannte, behält diese ihren geltenden Wert, und die Meldung nennt sie – jetzt auch die Sprachansagen, die bisher still den geltenden Wert behielten.
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul und sind in allen Plugins dieser Reihe gleich.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, alle Beanstandungen werden genannt. Eine Sicherung, die die Regelung mit einem Mangel einschaltet, der das Einschalten sperrt, wird nicht zurückgespielt. Das Aktionstoken gehört in die Datei, die Sprechtoken nicht; eine Datei mit Sprechtoken wird abgewiesen. Die Zweitschrift zieht mit, die Abo-Datei folgt dem zurückgespielten Präfix, und die Meldung sagt, wann der Dienst mit den zurückgespielten Einstellungen arbeitet.
+- Am Gerät nicht gemessen. Gemessen wurde mit einem Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen aller 30 Vorfassungen von 0.9.15 bis 0.9.44.
 
 ## Neu in 0.9.44
 
