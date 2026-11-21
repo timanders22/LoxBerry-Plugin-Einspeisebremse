@@ -864,7 +864,8 @@ if ($eb_post) {
 }
 
 if ($eb_rahmen) {
-    LBWeb::lbheader(eb_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel(eb_t('ALLG.TITEL'), __DIR__), 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
