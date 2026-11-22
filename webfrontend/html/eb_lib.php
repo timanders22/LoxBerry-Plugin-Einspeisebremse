@@ -2382,7 +2382,9 @@ function eb_langdir()
         $k[] = $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang';
     }
     $k[] = dirname(dirname(__DIR__)) . '/templates/lang';
-    $k[] = dirname(dirname(dirname(__DIR__))) . '/templates/lang';
+    /* 0.9.50: der dritte Kandidat (drei Ebenen ueber diesem Ordner, dann templates/lang) ist entfallen. Er traf nie: im
+     * Archiv liegt dort der Ordner ueber dem Plugin, installiert <LB>/webfrontend - ohne templates (gemessen am Geraet
+     * 05.09.2026, Geraet/2026-09-05/06_baum_tiefe2.txt; Befund Pruefung-Konstanten-Bau-20261122/bauart_lauf3.txt). */
     foreach ($k as $d) {
         if (is_file($d . '/language_de.ini') || is_file($d . '/language_en.ini')) {
             $gefunden = $d;
