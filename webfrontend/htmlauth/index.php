@@ -288,6 +288,12 @@ if ($eb_post && isset($_POST['vorlage_bb'])) {
 
 /* ---------------- Regelung ein- oder ausschalten ---------------- */
 /* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+/* 0.9.51: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ($eb_post && isset($_POST['meld_test'])) {
+    list($eb_at, $eb_ag) = eb_meld_test();
+    if ($eb_at) { $eb_meldungen[] = eb_e(eb_t('SIGNALMELDUNG.T_OK')); } else { $eb_fehler[] = eb_e($eb_ag); }
+    $eb_tab = 'tab-settings';
+}
 if ($eb_post && isset($_POST['ansage_test'])) {
     list($eb_at, $eb_ag) = eb_ansage_test();
     if ($eb_at) { $eb_meldungen[] = eb_e(eb_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $eb_fehler[] = eb_e(eb_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $eb_ag); }
@@ -713,6 +719,13 @@ if ($eb_post && isset($_POST['speichern'])) {
             $eb_fehler[] = sprintf(eb_t('FEHLER.THEMA_GROSS'), $eb_thema,
                                    strtolower($eb_thema));
             eb_bean('mqtt_topic');     // X-2
+        } elseif (hb_bereich($eb_thema) !== '' && $eb_thema !== (string) $eb_cfg['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+            // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+            /* 0.9.51 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+             * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+             * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+            $eb_fehler[] = sprintf(eb_t('HAUSBEREICH.FEHLER'), $eb_thema, hb_bereich($eb_thema));
+            eb_bean('mqtt_topic');     // X-2
         } else {
             $eb_cfg['mqtt_topic'] = $eb_thema;
         }
@@ -833,7 +846,8 @@ if ($eb_post && isset($_POST['eb_zurueck'])) {
          * Maengelkasten zeigte die Ablehnungsgruende als Einschalthindernisse). eb_config_speichern()
          * schreibt Konfiguration und Zweitschrift; das Modul misst danach, ob sie inhaltsgleich sind. */
         $eb_b = eb_sicherung_beschreibung();
-        $eb_b['speichern'] = function ($neu) { return eb_config_speichern($neu); };
+        // 0.9.51: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $eb_b['speichern'] = function ($neu) { return eb_config_speichern($neu, false); };
         $eb_b['zweitschrift'] = function () { $p = eb_paths(); return array($p['config'], $p['sicherung']); };
         $eb_b['nachziehen'] = 'eb_sicherung_nachziehen';
         $eb_b['log'] = 'eb_log';
@@ -857,6 +871,29 @@ if ($eb_post && isset($_POST['eb_zurueck'])) {
  * stehen - die Seite las die Konfiguration vor dem Rendern neu und zeigte
  * in jedem Feld den gespeicherten Wert (gemessen 01.10.2026). Seit X-2
  * reisen die Eingaben mit der Einmalmeldung, und auch dieser POST leitet um. */
+/* 0.9.51: Lade-Beanstandungen - angezeigte Werte uebernehmen, nur mit Haken (Entscheidung des Hausherrn 24.11.2026,
+ * "Haken im gelben Kasten"); ohne ihn bleibt die Datei byte-gleich. Geschrieben ohne "Dateiwert behalten". */
+if ($eb_post && sicherung_lade_eingang($_POST) !== '') {
+    $eb_lb = eb_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $eb_fehler[] = sicherung_t('K_LADE_HAKEN_FEHLT', $eb_lb);
+    } else {
+        $eb_ld = eb_lade_roh();
+        $eb_lv = eb_config(false);
+        $eb_un = array();
+        if ($eb_ld !== null) {
+            list($eb_lneu, $eb_un) = sicherung_lade_uebernehmen_stand($eb_ld, $eb_lv, sicherung_lade_beanstandungen($eb_lb, $eb_ld, $eb_lv));
+            if ($eb_un && !eb_config_speichern($eb_lneu, false)) {
+                $eb_fehler[] = sicherung_t('K_SCHREIBFEHLER', $eb_lb);
+                $eb_un = array();
+            }
+        }
+        if ($eb_un) {
+            eb_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $eb_un)));
+            $eb_meldungen[] = sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $eb_lb), implode(', ', $eb_un));
+        }
+    }
+}
 if ($eb_post) {
     eb_einmal_schreiben($eb_meldungen, $eb_fehler, $eb_testausgabe, $eb_eingaben_post);
     header('Location: index.php?form=' . rawurlencode(substr($eb_tab, 4)), true, 303);
@@ -1018,6 +1055,11 @@ if ($eb_rahmen) {
     if (eb_eingaben() !== null) { ?><br><i><?= eb_e(eb_t('ALLG.EINGABEN_ZURUECK')) ?></i><?php } ?></div>
 <?php } ?>
 
+<?php /* 0.9.51: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$eb_lade = eb_lade_beanstandungen();
+eb_lade_melden($eb_lade); ?>
+<?= sicherung_lade_kasten(eb_lade_b(true), isset($eb_lade) ? $eb_lade : eb_lade_beanstandungen(),
+        eb_fmt() . '<input data-role="none" type="hidden" name="activetab" value="' . eb_e($eb_tab) . '">') ?>
 <div class="sm-kacheln">
   <div class="sm-kachel"><?= eb_e(eb_t('ALLG.REGELUNG')) ?>
     <b class="<?= !empty($eb_cfg['ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($eb_cfg['ein']) ? eb_e(eb_t('ALLG.EIN')) : eb_e(eb_t('ALLG.AUS')) ?></b>

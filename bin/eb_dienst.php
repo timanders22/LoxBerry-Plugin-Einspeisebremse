@@ -1746,6 +1746,7 @@ function eb_veroeffentlichen($cfg, $stand)
     static $lebt_um = 0.0;
     if (empty($cfg['mqtt_ein'])) { return; }
     $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    eb_praefix_haus_melden($cfg);   // 0.9.51: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     if ($abgeraeumt !== $praefix) {
         eb_mqtt_abraeumen($praefix);
         $abgeraeumt = $praefix;
@@ -2171,7 +2172,7 @@ $eb_cfg = eb_config();
 /* Regeln/05: fehlende Schluessel beim Dienststart einmal mit ihrer Vorgabe
  * in die Datei schreiben. Am 17.09.2026 am Geraet: 30 von 32 Schluesseln,
  * q_erzeugung2 und q_erzeugung3 fehlten seit ihrer Einfuehrung. */
-if (eb_config_vervollstaendigen()) { $eb_cfg = eb_config(); }
+if (eb_dienst_pflege()) { $eb_cfg = eb_config(); }     // 0.9.51: vervollstaendigen und Lade-Beanstandungen einmal melden (Regeln/05)
 /* Das Gateway-Abo auf den aktuellen Praefix bringen (siehe eb_abo_datei). */
 eb_abo_datei($eb_cfg['mqtt_topic'], true);
 $eb_themen_alt = implode('|', eb_themen($eb_cfg));

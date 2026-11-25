@@ -725,6 +725,9 @@ function eb_selbstpruefung()
     $z[] = eb_pruefzeile(eb_klartext('SP.NAMEN'), $eb_nok, $eb_ntext);
     list($eb_bok, $eb_btext) = eb_pruef_bruecke();
     $z[] = eb_pruefzeile(eb_klartext('SP.BRUECKE'), $eb_bok, $eb_btext);
+    /* 0.9.51: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)? */
+    $eb_hb = eb_pruef_praefix_haus($cfg);
+    $z[] = eb_pruefzeile(eb_t('HAUSBEREICH.F_TEST'), $eb_hb[0], $eb_hb[1]);
     /* Nachtwelle N9 (0.9.38): stehen unter MQTT-Gateway V2 die Haken der Hakenliste (Einbindung in Loxone, Schritt 2)
      * mit dem richtigen Noncached? Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein
      * Punkt. Die Bemerkung maskiert eb_test.php beim Ausgeben. */
@@ -779,6 +782,12 @@ function eb_selbstpruefung()
     list($n, $f) = eb_selbsttest(false);
     $z[] = eb_pruefzeile(eb_klartext('SP.KERN'), $f === 0 ? 1 : 0,
         sprintf(eb_klartext('SP.KERN_ZAHL'), EB_KERN, $n, $f));
+    /* 0.9.51: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+     * nicht so gilt, wie er gespeichert ist. */
+    $eb_lb = eb_lade_b(false);
+    $eb_la = eb_lade_beanstandungen(null, false);
+    $z[] = eb_pruefzeile(sicherung_t('K_LADE_FRAGE', $eb_lb), $eb_la ? 0 : 1,
+        $eb_la ? implode(' ', sicherung_lade_saetze($eb_lb, $eb_la)) : sicherung_t('K_LADE_KEINE', $eb_lb));
 
     return $z;
 }
